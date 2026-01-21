@@ -1,0 +1,43 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: duckdb-format-analysis
+  namespace: default
+spec:
+  template:
+    metadata:
+      labels:
+        app: duckdb-analysis
+      annotations:
+        gke-gcsfuse/volumes: "true"
+    spec:
+      serviceAccountName: duckdb-analysis-sa
+      restartPolicy: Never
+      containers:
+      - name: duckdb-analysis
+        image: us-central1-docker.pkg.dev/infrastructure-433717/duckdb-analysis/duckdb-analysis:latest
+        imagePullPolicy: Always
+        env:
+        - name: GCS_MOUNT_PATH
+          value: /mnt/gcs
+        resources:
+          requests:
+            memory: "8Gi"
+            cpu: "1"
+          limits:
+            memory: "20Gi"
+            cpu: "4"
+        volumeMounts:
+        - name: gcs-fuse
+          mountPath: /mnt/gcs
+          readOnly: true
+      volumes:
+      - name: gcs-fuse
+        csi:
+          driver: gcsfuse.csi.storage.gke.io
+          volumeAttributes:
+            bucketName: bq-export-chicago-taxi-433717
+            mountOptions: "implicit-dirs"
+      nodeSelector:
+        cloud.google.com/gke-nodepool: default-node-pool
+  backoffLimit: 2

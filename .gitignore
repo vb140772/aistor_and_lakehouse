@@ -1,0 +1,22 @@
+# Local data directories
+data/
+
+# Terraform files
+.terraform/
+*.tfplan
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# DuckDB temporary files
+duckdb_temp/
+
+# OS files
+.DS_Store
+Thumbs.db

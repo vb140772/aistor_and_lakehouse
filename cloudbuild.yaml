@@ -1,0 +1,25 @@
+steps:
+  # Build the container image
+  # Using . as context but .gcloudignore will exclude data/ and other large files
+  - name: 'gcr.io/cloud-builders/docker'
+    args: 
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/duckdb-analysis:latest'
+      - '-f'
+      - 'docker/Dockerfile'
+      - '.'
+    id: 'build-image'
+  
+  # Push the container image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/duckdb-analysis:latest']
+    id: 'push-image'
+    waitFor: ['build-image']
+
+images:
+  - 'gcr.io/$PROJECT_ID/duckdb-analysis:latest'
+
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
