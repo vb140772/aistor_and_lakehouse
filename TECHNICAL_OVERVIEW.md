@@ -8,16 +8,17 @@ This project compares the performance and efficiency of **Avro** and **Parquet**
 
 - **Performance**: Parquet is **133.21x faster** than Avro for analytical GROUP BY queries
 - **Storage Efficiency**: Parquet files are **3.1x smaller** than Avro files (4.2GB vs 13GB)
-- **Data Volume**: Analyzed ~37 million taxi trips across 90 companies
-- **Result Accuracy**: Both formats produce identical results, verified against BigQuery
+- **Data Volume**: Analyzed ~58 million taxi trips across 90 companies
+- **Result Accuracy**: All formats (Avro, Parquet, Trino/Iceberg) produce identical results, verified against BigQuery
+- **Query Engine Comparison**: DuckDB is **2.41x faster** than Trino/Iceberg for single-node queries (0.193s vs 0.465s)
 
 ### Dataset
 
 - **Source**: `infrastructure-433717.chicago_taxi_analysis_us.taxi_trips_2019_2023`
 - **Time Period**: 2019-2023 (5 years)
-- **Total Records**: ~37 million trips
+- **Total Records**: ~58 million trips
 - **Companies**: 90 unique taxi companies
-- **Files**: 424 files per format
+- **Files**: 424 Parquet files (4.2GB)
 
 ---
 
@@ -34,11 +35,16 @@ graph TD
     D -->|gcloud rsync| F[Local Filesystem<br/>./data/parquet/]
     E -->|DuckDB read_avro| G[DuckDB Engine<br/>20GB memory, 4 threads]
     F -->|DuckDB read_parquet| G
+    F -->|Spark Load| I[MinIO AIStor<br/>Iceberg REST Catalog]
+    I -->|Trino Query| J[Trino Engine<br/>Distributed SQL]
     G -->|SQL Query| H[Results<br/>90 companies aggregated]
+    J -->|SQL Query| H
     
     style A fill:#4285f4
     style B fill:#34a853
     style G fill:#ea4335
+    style I fill:#ff6b6b
+    style J fill:#4ecdc4
     style H fill:#fbbc04
 ```
 
@@ -46,8 +52,11 @@ graph TD
 
 1. **Data Export Layer**: BigQuery export scripts (`export_subset_to_avro.sh`, `export_subset_to_parquet.sh`)
 2. **Data Transfer Layer**: GCS to local download (`download_from_gcs_rsync.sh`)
-3. **Analysis Layer**: DuckDB Python script (`run_analysis.py`)
-4. **Orchestration**: Main script (`run_analysis.sh`) for execution control
+3. **Analysis Layer**: 
+   - DuckDB Python script (`run_analysis.py`) - Direct file reading
+   - Trino/Iceberg Python script (`run_trino_analysis.py`) - Spark loading + Trino querying
+4. **Storage Layer**: MinIO AIStor with Native Apache Iceberg REST Catalog
+5. **Orchestration**: Main scripts (`run_analysis.sh`, `run_trino_analysis.sh`) for execution control
 
 ---
 
@@ -74,6 +83,10 @@ graph LR
         D2 -->|read_parquet| A1
         A1 -->|GROUP BY company| A2[Query Execution]
         A2 -->|Results| A3[Performance Metrics]
+        
+        D2 -->|Spark Load| A4[MinIO S3 + Iceberg]
+        A4 -->|Trino Query| A5[Trino/Iceberg]
+        A5 -->|GROUP BY company| A2
     end
     
     style E1 fill:#4285f4
@@ -99,6 +112,12 @@ sequenceDiagram
     DuckDB->>DuckDB: Execute GROUP BY query
     DuckDB->>DuckDB: Aggregate results
     DuckDB-->>Results: Return performance metrics
+    
+    Local->>Spark: Read Parquet files from S3
+    Spark->>MinIO: Write to Iceberg table
+    Spark->>Trino: Query Iceberg table
+    Trino->>Trino: Execute GROUP BY query
+    Trino-->>Results: Return performance metrics
 ```
 
 ---
@@ -170,9 +189,75 @@ File Footer (Schema + Metadata)
 
 ---
 
+## Query Engine Comparison: DuckDB vs Trino/Iceberg
+
+### Architecture Differences
+
+**DuckDB (In-Process OLAP)**:
+- Single-node, in-process SQL engine
+- Direct file reading (no data loading step)
+- Optimized for analytical queries on local files
+- Low overhead, minimal setup
+
+**Trino/Iceberg (Distributed SQL)**:
+- Distributed query engine with coordinator/worker architecture
+- Data loaded into Iceberg table format via Spark
+- Query via Trino against Iceberg metadata
+- Scalable to multiple workers for parallel processing
+
+### Test Results: DuckDB vs Trino/Iceberg
+
+| Metric | DuckDB | Trino/Iceberg | Ratio |
+|--------|--------|---------------|-------|
+| **Query Execution Time** | 0.193 seconds | 0.465 seconds | 2.41x faster (DuckDB) |
+| **Data Loading Time** | N/A (direct read) | 6.78 seconds (Spark) | - |
+| **Total Time** | 0.193 seconds | 7.25 seconds | 37.6x faster (DuckDB) |
+| **Result Rows** | 90 | 90 | Match |
+| **Result Accuracy** | ✓ | ✓ | Identical |
+
+### Performance Analysis
+
+**Why DuckDB is Faster for Single-Node Queries**:
+1. **No Data Loading Overhead**: DuckDB reads Parquet files directly, while Trino requires Spark to load data into Iceberg format first
+2. **In-Process Execution**: DuckDB runs in the same process, eliminating network overhead
+3. **Optimized for Local Files**: DuckDB is specifically designed for analytical queries on local filesystems
+4. **Lower Latency**: No distributed coordination overhead for single-node queries
+
+**When Trino/Iceberg Excels**:
+1. **Large-Scale Distributed Queries**: With multiple workers, Trino can parallelize across nodes
+2. **Concurrent Query Processing**: Trino handles multiple concurrent queries better
+3. **Data Lake Architecture**: Iceberg provides ACID transactions, time travel, and schema evolution
+4. **Scalability**: Can add workers to handle larger datasets and more concurrent users
+
+### Trino/Iceberg Architecture
+
+```mermaid
+graph TD
+    A[Parquet Files<br/>Local/S3] -->|Spark Read| B[Spark Session<br/>PySpark 4.1.1]
+    B -->|Write| C[MinIO AIStor<br/>S3 Storage]
+    C -->|Iceberg Metadata| D[Iceberg Table<br/>REST Catalog]
+    D -->|Query| E[Trino Coordinator]
+    E -->|Distribute Tasks| F[Trino Workers<br/>Parallel Execution]
+    F -->|Aggregate| E
+    E -->|Results| G[Query Results]
+    
+    style C fill:#ff6b6b
+    style D fill:#4ecdc4
+    style E fill:#95e1d3
+    style F fill:#95e1d3
+```
+
+**Key Components**:
+- **MinIO AIStor**: S3-compatible object storage with native Iceberg REST catalog
+- **Spark**: Loads Parquet files and writes to Iceberg table format
+- **Iceberg REST Catalog**: Manages table metadata, schema, and partitioning
+- **Trino**: Distributed SQL engine querying Iceberg tables
+
+---
+
 ## Performance Analysis
 
-### Why Parquet is 133x Faster
+### Why Parquet is 133x Faster than Avro
 
 #### 1. Columnar Storage Advantage
 
@@ -275,10 +360,19 @@ graph TD
 
 ### Performance Results
 
+#### Format Comparison (DuckDB)
+
 | Format | Execution Time | Files Processed | Total Size | Speedup |
 |--------|---------------|----------------|------------|---------|
 | **Avro** | 29.174 seconds | 424 files | 13 GB | Baseline |
 | **Parquet** | 0.219 seconds | 424 files | 4.2 GB | **133.21x faster** |
+
+#### Query Engine Comparison (Parquet Data)
+
+| Engine | Execution Time | Data Loading | Total Time | Speedup vs Trino |
+|--------|---------------|--------------|------------|------------------|
+| **DuckDB** | 0.193 seconds | N/A (direct read) | 0.193 seconds | **2.41x faster** |
+| **Trino/Iceberg** | 0.465 seconds | 6.78 seconds | 7.25 seconds | Baseline |
 
 ### Storage Efficiency
 
@@ -289,7 +383,7 @@ graph TD
 
 ### Result Verification
 
-**Top 5 Companies (Both Formats Match BigQuery)**:
+**Top 5 Companies (All Formats Match BigQuery)**:
 
 | Rank | Company | Trip Count | Total Fare | Avg Fare |
 |------|---------|------------|------------|----------|
@@ -299,7 +393,7 @@ graph TD
 | 4 | Chicago Carriage Cab Corp | 4,372,302 | $62,688,962 | $14.34 |
 | 5 | City Service | 4,137,053 | $70,698,979 | $17.09 |
 
-**Verification Status**: ✓ Both formats returned 90 companies with identical counts and fare totals matching BigQuery results.
+**Verification Status**: ✓ All formats (Avro/DuckDB, Parquet/DuckDB, Parquet/Trino/Iceberg) returned 90 companies with identical counts and fare totals matching BigQuery results.
 
 ### Detailed Performance Metrics
 
@@ -338,12 +432,25 @@ Time difference: 28.955 seconds (99.2%)
 - **Temp Directory**: `./duckdb_temp`
 - **Extensions**: Avro extension (for Avro file reading)
 
+### Trino/Iceberg Configuration
+
+- **Trino Version**: 477
+- **Spark Version**: 4.1.1 (PySpark)
+- **Iceberg Version**: 1.10.1
+- **MinIO AIStor**: Native Iceberg REST catalog
+- **Catalog Type**: REST catalog with SigV4 authentication
+- **Warehouse**: `trinotutorial` bucket in MinIO
+- **Data Loading**: Spark DataFrame API writing to Iceberg table
+
 ### System Configuration
 
 - **Execution Mode**: Local filesystem
 - **Data Location**: `./data/avro/` and `./data/parquet/`
 - **Download Method**: `gcloud storage rsync`
-- **Analysis Engine**: DuckDB (in-process SQL OLAP database)
+- **Analysis Engines**: 
+  - DuckDB (in-process SQL OLAP database)
+  - Trino (distributed SQL engine) with Iceberg catalog
+- **Storage Backend**: MinIO AIStor (S3-compatible object storage)
 
 ---
 
@@ -366,7 +473,24 @@ Time difference: 28.955 seconds (99.2%)
 - **Parallel Processing**: Column operations can be parallelized
 - **Dictionary Encoding**: Faster GROUP BY on encoded values
 
-### 3. Use Case Recommendations
+### 3. Query Engine Recommendations
+
+**Choose DuckDB when**:
+- Single-node analytical queries
+- Direct file access (no data loading)
+- Low-latency queries (< 1 second)
+- Local filesystem or simple S3 access
+- Minimal setup and overhead
+
+**Choose Trino/Iceberg when**:
+- Distributed query processing (multiple workers)
+- Data lake architecture with ACID transactions
+- Concurrent query processing (multiple users)
+- Schema evolution and time travel needed
+- Large-scale data warehousing
+- Integration with existing data lake infrastructure
+
+### 4. Use Case Recommendations
 
 **Choose Parquet when**:
 - Analytical queries (GROUP BY, aggregations, filtering)
@@ -386,8 +510,11 @@ Time difference: 28.955 seconds (99.2%)
 
 ## Conclusion
 
-This analysis demonstrates that **Parquet is significantly superior** for analytical workloads:
+This analysis demonstrates several key findings:
 
+### Format Comparison (Parquet vs Avro)
+
+**Parquet is significantly superior** for analytical workloads:
 1. **133x faster query execution** for GROUP BY aggregations
 2. **3.1x smaller storage footprint** with same compression algorithm
 3. **Identical data accuracy** - both formats produce correct results
@@ -395,14 +522,48 @@ This analysis demonstrates that **Parquet is significantly superior** for analyt
 
 The columnar storage architecture of Parquet, combined with dictionary encoding and column pruning, makes it the optimal choice for analytical queries on large datasets.
 
+### Query Engine Comparison (DuckDB vs Trino/Iceberg)
+
+**For single-node queries on local files**:
+- **DuckDB is 2.41x faster** (0.193s vs 0.465s) due to direct file access and in-process execution
+- **No data loading overhead** - reads Parquet files directly
+- **Lower latency** - optimized for analytical queries on local filesystems
+
+**For distributed and data lake scenarios**:
+- **Trino/Iceberg provides scalability** - can distribute queries across multiple workers
+- **Data lake features** - ACID transactions, time travel, schema evolution via Iceberg
+- **Better for concurrent workloads** - handles multiple users and queries simultaneously
+- **Enterprise-ready** - integrates with existing data infrastructure
+
+### Overall Recommendations
+
+1. **File Format**: Use **Parquet** for analytical workloads (133x faster, 3.1x smaller)
+2. **Query Engine (Single Node)**: Use **DuckDB** for fastest single-node performance
+3. **Query Engine (Distributed)**: Use **Trino/Iceberg** for scalable, enterprise data lake architecture
+4. **Storage**: Use **MinIO AIStor** with native Iceberg REST catalog for modern data lake infrastructure
+
 ---
 
 ## Appendix: Test Environment
 
 - **BigQuery Table**: `infrastructure-433717.chicago_taxi_analysis_us.taxi_trips_2019_2023`
 - **Export Tool**: BigQuery `bq extract` command
-- **Storage**: Google Cloud Storage (GCS)
-- **Analysis Tool**: DuckDB 1.4.3
+- **Storage**: Google Cloud Storage (GCS), MinIO AIStor (local)
+- **Analysis Tools**: 
+  - DuckDB 1.4.3 (format comparison)
+  - Trino 477 with Iceberg 1.10.1 (query engine comparison)
+  - Spark 4.1.1 (PySpark) for data loading
 - **Execution**: Local filesystem (macOS)
 - **Python**: 3.11
+- **Java**: OpenJDK 21 (for Spark/Trino)
 - **Date**: January 2025
+
+### Trino/Iceberg Test Configuration
+
+- **MinIO AIStor**: Native Iceberg REST catalog at `http://localhost:9000/_iceberg`
+- **Warehouse**: `trinotutorial` bucket
+- **Catalog Name**: `tutorial_catalog`
+- **Schema**: `taxi_analysis`
+- **Table**: `taxi_trips_iceberg`
+- **Data Loading**: Spark DataFrame API (6.78 seconds for 57.9M rows)
+- **Query**: Same GROUP BY aggregation as DuckDB tests
