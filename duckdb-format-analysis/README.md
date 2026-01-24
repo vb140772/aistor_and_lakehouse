@@ -4,13 +4,21 @@ Compare Avro vs Parquet file format performance using DuckDB.
 
 ## Overview
 
-This project analyzes the performance differences between **Avro** and **Parquet** file formats for analytical queries using real-world Chicago taxi trip data.
+This project compares the performance and efficiency of **Avro** and **Parquet** file formats for analytical queries using real-world taxi trip data from Chicago (2019-2023).
 
 ### Key Findings
 
 - **Performance**: Parquet is **150x faster** than Avro for GROUP BY queries
 - **Storage**: Parquet files are **3.1x smaller** than Avro (4.2GB vs 13GB)
-- **Data**: ~58 million taxi trips across 90 companies (2019-2023)
+- **Data**: ~58 million taxi trips across 90 companies
+
+### Dataset
+
+- **Source**: Chicago taxi trips (BigQuery public dataset)
+- **Time Period**: 2019-2023 (5 years)
+- **Total Records**: ~58 million trips
+- **Companies**: 90 unique taxi companies
+- **Files**: 424 files per format
 
 ## Quick Start
 
@@ -33,8 +41,23 @@ This project analyzes the performance differences between **Avro** and **Parquet
 
 3. **Run analysis**:
    ```bash
-   ./scripts/run_analysis.sh --local
+   ./scripts/run_analysis.sh
    ```
+
+## Architecture
+
+```mermaid
+graph TD
+    A[GCS Bucket] -->|gcloud rsync| B[Local: ./data/avro/]
+    A -->|gcloud rsync| C[Local: ./data/parquet/]
+    B -->|DuckDB read_avro| D[DuckDB Engine<br/>20GB memory, 4 threads]
+    C -->|DuckDB read_parquet| D
+    D -->|SQL Query| E[Results<br/>90 companies aggregated]
+    
+    style A fill:#34a853
+    style D fill:#ea4335
+    style E fill:#fbbc04
+```
 
 ## Project Structure
 
@@ -48,13 +71,34 @@ duckdb-format-analysis/
 │   └── download_from_gcs_rsync.sh  # Download data from GCS
 ├── data/                      # Data directory (Avro + Parquet files)
 ├── requirements.txt
-├── README.md
-└── TECHNICAL_OVERVIEW.md
+└── README.md
 ```
 
-## Analysis Query
+## File Format Comparison
 
-The benchmark runs the same aggregation query on both formats:
+### Storage Size
+
+| Metric | Avro | Parquet | Ratio |
+|--------|------|---------|-------|
+| **Total Size** | 13 GB | 4.2 GB | 3.1:1 |
+| **Average File Size** | ~30 MB | ~9.3 MB | 3.2:1 |
+| **Compression** | SNAPPY | SNAPPY | Same |
+
+### Why Parquet is Smaller
+
+1. **Column-Oriented Storage**: Stores data column by column, enabling better compression
+2. **Dictionary Encoding**: Repeated values stored as IDs (e.g., "Flash Cab" = ID 1)
+3. **Efficient Encoding**: Uses run-length encoding and delta encoding
+
+### Why Parquet is 150x Faster
+
+| Aspect | Parquet | Avro |
+|--------|---------|------|
+| **I/O** | ~420MB (2 columns) | 13GB (all data) |
+| **Column Pruning** | Only reads needed columns | Reads entire rows |
+| **Dictionary Lookup** | Fast ID-based lookup | Full string comparison |
+
+## Analysis Query
 
 ```sql
 SELECT 
@@ -67,32 +111,52 @@ GROUP BY company
 ORDER BY trip_count DESC
 ```
 
-## Results
+## Performance Results
 
-| Format | Execution Time | File Size |
-|--------|---------------|-----------|
-| Parquet | 0.19 seconds | 4.2 GB |
-| Avro | 28.3 seconds | 13 GB |
+| Format | Execution Time | Files | Total Size | Speedup |
+|--------|---------------|-------|------------|---------|
+| **Parquet** | 0.19 seconds | 424 | 4.2 GB | **150x faster** |
+| **Avro** | 28.3 seconds | 424 | 13 GB | Baseline |
 
-**Parquet is 150x faster** due to columnar storage and efficient compression.
+### Top 5 Companies
 
-## Scripts Reference
-
-| Script | Purpose |
-|--------|---------|
-| `run_analysis.sh` | Main orchestration script |
-| `run_local_analysis.sh` | Execute DuckDB analysis |
-| `download_from_gcs_rsync.sh` | Download data from GCS bucket |
+| Rank | Company | Trip Count | Total Fare | Avg Fare |
+|------|---------|------------|------------|----------|
+| 1 | Taxi Affiliation Services | 10,813,053 | $171,416,137 | $15.85 |
+| 2 | Flash Cab | 10,007,839 | $174,622,055 | $17.45 |
+| 3 | Sun Taxi | 4,530,168 | $79,583,742 | $17.57 |
+| 4 | Chicago Carriage Cab Corp | 4,372,302 | $62,688,962 | $14.34 |
+| 5 | City Service | 4,137,053 | $70,698,979 | $17.09 |
 
 ## Configuration
 
 ### DuckDB Settings
 
 In `analysis/run_analysis.py`:
-- Memory limit: 20GB
-- Threads: 4
-- Temp directory: `./duckdb_temp`
+- **Memory Limit**: 20 GB
+- **Threads**: 4
+- **Temp Directory**: `./duckdb_temp`
+- **Extensions**: Avro extension (for Avro file reading)
 
-## Documentation
+## Use Case Recommendations
 
-See [TECHNICAL_OVERVIEW.md](TECHNICAL_OVERVIEW.md) for detailed analysis results and architecture.
+**Choose Parquet when**:
+- Analytical queries (GROUP BY, aggregations, filtering)
+- Column-based operations
+- Storage efficiency is important
+- Query performance is critical
+
+**Choose Avro when**:
+- Row-based processing (full row access)
+- Schema evolution is important
+- Streaming data processing
+- Write-heavy workloads
+
+## Conclusion
+
+**Parquet is significantly superior** for analytical workloads:
+1. **150x faster query execution** for GROUP BY aggregations
+2. **3.1x smaller storage footprint** with same compression algorithm
+3. **Identical data accuracy** - both formats produce correct results
+
+The columnar storage architecture of Parquet, combined with dictionary encoding and column pruning, makes it the optimal choice for analytical queries on large datasets.
