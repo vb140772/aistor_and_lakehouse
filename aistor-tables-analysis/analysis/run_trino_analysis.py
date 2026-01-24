@@ -10,12 +10,31 @@ import sys
 import time
 import glob
 import json
+import logging
+
+# Configure logging early
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    stream=sys.stdout
+)
+logger = logging.getLogger(__name__)
+
+# Force stdout to be unbuffered
+sys.stdout.reconfigure(line_buffering=True)
+
+logger.info("Starting script...")
+
 import requests
+logger.info("Imported requests")
 import boto3
+logger.info("Imported boto3")
 import pandas as pd
+logger.info("Imported pandas")
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 from trino.dbapi import connect
+logger.info("Imported trino")
 
 # Import sigv4 module for REST API authentication
 # Try local module first, then fall back to container path
@@ -31,7 +50,7 @@ except ImportError:
         sigv4 = None
 
 # Configuration from environment variables
-TRINO_URI = os.getenv("TRINO_URI", "http://localhost:8080")
+TRINO_URI = os.getenv("TRINO_URI", "http://localhost:9999")
 MINIO_HOST = os.getenv("MINIO_HOST", "http://localhost:9000")
 # For Trino catalog (running in Docker), use 'minio:9000' (Docker service name)
 # For Python API calls and Spark, use MINIO_HOST (can be localhost:9000 from host)
@@ -182,121 +201,83 @@ def ensure_warehouse(s3_client):
             print(f"Warning: Could not create warehouse via API: {e}")
 
 
-def create_spark_session():
+def run_spark_in_container(staging_bucket: str, schema: str, table: str) -> bool:
     """
-    Create Spark session configured for AIStor Iceberg catalog.
+    Run Spark ingestion inside the Spark Docker container.
     
-    Note: Requires Java 8-21. Java 24+ has compatibility issues with Spark/Hadoop.
-    If you encounter 'getSubject is not supported' errors, use an older Java version.
+    This eliminates the need for Java to be installed on the host machine.
+    The Spark container has Java 17 bundled.
     """
+    import subprocess
+    
+    logger.info("Entering run_spark_in_container")
     print(f"\n{'='*60}")
-    print("Creating Spark session")
+    print("Running Spark ingestion in container")
     print(f"{'='*60}")
+    sys.stdout.flush()
+    
+    # Spark packages for Iceberg support (Spark 3.5 compatible)
+    spark_packages = (
+        "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.6.1,"
+        "org.apache.iceberg:iceberg-aws-bundle:1.6.1,"
+        "org.apache.hadoop:hadoop-aws:3.3.4"
+    )
+    
+    # Build docker exec command
+    cmd = [
+        "docker", "exec", "docker-spark-1",
+        "/opt/spark/bin/spark-submit",
+        "--packages", spark_packages,
+        "/app/analysis/spark_ingest.py",
+        "--warehouse", WAREHOUSE,
+        "--staging-bucket", staging_bucket,
+        "--minio-host", "http://minio:9000",  # Docker network address
+        "--access-key", MINIO_ACCESS_KEY,
+        "--secret-key", MINIO_SECRET_KEY,
+        "--schema", schema,
+        "--table", table
+    ]
+    
+    print(f"Executing: docker exec docker-spark-1 spark-submit ...")
+    print("This may take a while for large datasets...")
     
     try:
-        import pyspark
-        from pyspark.sql import SparkSession
-    except ImportError:
-        print("✗ PySpark not available. Please install: pip install pyspark")
-        return None
-    
-    try:
-        # Get Spark version for JAR packages
-        pyspark_version = pyspark.__version__
-        spark_minor_version = ".".join(pyspark_version.split(".")[:2])
-        
-        # Use Iceberg version compatible with Spark version
-        # Spark 4.0+ uses Iceberg 1.10.1+ with runtime-4.0_2.13
-        # Spark 3.5 uses Iceberg 1.9.1 with runtime-3.5_2.12
-        if spark_minor_version.startswith("4."):
-            # For Spark 4.x, use Iceberg 1.10.1 with Spark 4.0 runtime
-            spark_runtime_version = "4.0"
-            iceberg_version = "1.10.1"
-            scala_version = "2.13"
-        else:
-            spark_runtime_version = spark_minor_version
-            iceberg_version = "1.9.1"
-            scala_version = "2.12"
-        
-        # Build JAR packages string
-        # Include hadoop-aws for S3A filesystem support
-        spark_jars_packages = (
-            f"org.apache.iceberg:iceberg-spark-runtime-{spark_runtime_version}_{scala_version}:{iceberg_version},"
-            f"org.apache.iceberg:iceberg-aws-bundle:{iceberg_version},"
-            f"org.apache.hadoop:hadoop-aws:3.3.4"
+        # Run spark-submit in container
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600  # 10 minute timeout
         )
         
-        # Build Spark session with AIStor catalog configuration
-        spark = (
-            SparkSession.builder
-            .appName("AIStor Tables - Trino Analysis")
-            
-            # Download required JARs
-            .config("spark.jars.packages", spark_jars_packages)
-            
-            # Enable Iceberg extensions for special SQL commands
-            .config(
-                "spark.sql.extensions",
-                "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"
-            )
-            
-            # Configure our Iceberg catalog
-            .config(f"spark.sql.catalog.{ICEBERG_CATALOG_NAME}", "org.apache.iceberg.spark.SparkCatalog")
-            .config(f"spark.sql.catalog.{ICEBERG_CATALOG_NAME}.type", "rest")
-            .config(f"spark.sql.catalog.{ICEBERG_CATALOG_NAME}.uri", CATALOG_URL)
-            .config(f"spark.sql.catalog.{ICEBERG_CATALOG_NAME}.warehouse", WAREHOUSE)
-            
-            # REST endpoint credentials (required for SigV4)
-            .config(f"spark.sql.catalog.{ICEBERG_CATALOG_NAME}.rest.endpoint", MINIO_HOST)
-            .config(f"spark.sql.catalog.{ICEBERG_CATALOG_NAME}.rest.access-key-id", MINIO_ACCESS_KEY)
-            .config(f"spark.sql.catalog.{ICEBERG_CATALOG_NAME}.rest.secret-access-key", MINIO_SECRET_KEY)
-            
-            # SigV4 Authentication
-            .config(f"spark.sql.catalog.{ICEBERG_CATALOG_NAME}.rest.sigv4-enabled", "true")
-            .config(f"spark.sql.catalog.{ICEBERG_CATALOG_NAME}.rest.signing-name", "s3tables")
-            .config(f"spark.sql.catalog.{ICEBERG_CATALOG_NAME}.rest.signing-region", "us-east-1")
-            
-            # S3 Configuration for data access
-            .config(f"spark.sql.catalog.{ICEBERG_CATALOG_NAME}.s3.access-key-id", MINIO_ACCESS_KEY)
-            .config(f"spark.sql.catalog.{ICEBERG_CATALOG_NAME}.s3.secret-access-key", MINIO_SECRET_KEY)
-            .config(f"spark.sql.catalog.{ICEBERG_CATALOG_NAME}.s3.endpoint", MINIO_HOST)
-            .config(f"spark.sql.catalog.{ICEBERG_CATALOG_NAME}.s3.path-style-access", "true")
-            
-            # S3A filesystem configuration for reading Parquet files from S3
-            # Note: All numeric values must be numbers, not duration strings like "60s" or "24h"
-            .config("spark.hadoop.fs.s3a.endpoint", MINIO_HOST.replace("http://", "").replace("https://", ""))
-            .config("spark.hadoop.fs.s3a.access.key", MINIO_ACCESS_KEY)
-            .config("spark.hadoop.fs.s3a.secret.key", MINIO_SECRET_KEY)
-            .config("spark.hadoop.fs.s3a.path.style.access", "true")
-            .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
-            .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
-            .config("spark.hadoop.fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
-            # Timeout configurations (must be in milliseconds as numbers)
-            .config("spark.hadoop.fs.s3a.connection.timeout", "60000")  # 60 seconds in milliseconds
-            .config("spark.hadoop.fs.s3a.connection.establish.timeout", "60000")
-            .config("spark.hadoop.fs.s3a.connection.maximum", "15")
-            .config("spark.hadoop.fs.s3a.threads.max", "10")
-            .config("spark.hadoop.fs.s3a.threads.core", "5")
-            .config("spark.hadoop.fs.s3a.threads.keepalivetime", "60")  # seconds as number
-            .config("spark.hadoop.fs.s3a.attempts.maximum", "3")
-            # Override any duration string defaults that might be set elsewhere
-            .config("spark.hadoop.fs.s3a.multipart.purge.age", "86400")  # 24 hours in seconds
-            .config("spark.hadoop.fs.s3a.multipart.purge.interval", "3600")  # 1 hour in seconds
-            
-            .getOrCreate()
-        )
+        # Print output
+        if result.stdout:
+            # Filter to show key lines
+            for line in result.stdout.split('\n'):
+                if any(x in line for x in ['Read', 'rows', 'Table', 'Error', 'loaded', 'created', '=']):
+                    print(line)
         
-        print(f"✓ Spark session created")
-        print(f"  Spark version: {spark.version}")
-        print(f"  Catalog: {ICEBERG_CATALOG_NAME}")
-        print(f"  Warehouse: {WAREHOUSE}")
+        if result.returncode != 0:
+            print(f"✗ Spark ingestion failed (exit code {result.returncode})")
+            if result.stderr:
+                # Show last 20 lines of stderr
+                stderr_lines = result.stderr.strip().split('\n')
+                for line in stderr_lines[-20:]:
+                    print(f"  {line}")
+            return False
         
-        return spark
+        print("✓ Spark ingestion completed successfully")
+        return True
+        
+    except subprocess.TimeoutExpired:
+        print("✗ Spark ingestion timed out (>10 minutes)")
+        return False
+    except FileNotFoundError:
+        print("✗ Docker not found. Make sure Docker is running.")
+        return False
     except Exception as e:
-        print(f"✗ Failed to create Spark session: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
+        print(f"✗ Failed to run Spark in container: {e}")
+        return False
 
 
 def create_iceberg_catalog(cur) -> bool:
@@ -442,78 +423,6 @@ def create_hive_table_from_s3(cur, s3_path: str, table_name: str = "taxi_trips_p
         return False
 
 
-def load_data_via_spark(spark, s3_path: str, iceberg_table: str) -> bool:
-    """Load Parquet files from S3 into Iceberg table using Spark."""
-    print(f"\n{'='*60}")
-    print("Loading data using Spark")
-    print(f"{'='*60}")
-    
-    try:
-        # Create schema in Iceberg catalog
-        print(f"Creating schema '{SCHEMA_NAME}' if needed...")
-        spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {ICEBERG_CATALOG_NAME}.{SCHEMA_NAME}")
-        print(f"✓ Schema '{SCHEMA_NAME}' ready")
-        
-        # Set default namespace for convenience
-        spark.sql(f"USE {ICEBERG_CATALOG_NAME}.{SCHEMA_NAME}")
-        
-        # Drop table if exists
-        try:
-            spark.sql(f"DROP TABLE IF EXISTS {ICEBERG_CATALOG_NAME}.{SCHEMA_NAME}.{iceberg_table}")
-            print(f"✓ Dropped existing table if present")
-        except Exception as e:
-            # Table might not exist, which is fine
-            pass
-        
-        # Read Parquet files from S3
-        # Spark with Iceberg can read from S3 using the catalog's S3 configuration
-        # Convert s3://bucket/prefix to s3a://bucket/prefix for Spark
-        s3a_path = s3_path.replace("s3://", "s3a://")
-        # Remove wildcard and ensure path ends with / for directory
-        s3a_path = s3a_path.rstrip("*").rstrip("/") + "/"
-        
-        print(f"Reading Parquet files from: {s3a_path}")
-        print("This may take a while for large datasets...")
-        
-        start_time = time.time()
-        
-        # Read Parquet files from S3
-        # S3A configuration is already set in Spark session
-        # Spark will automatically read all Parquet files in the directory
-        parquet_df = spark.read.parquet(s3a_path)
-        
-        # Get row count for progress tracking
-        row_count = parquet_df.count()
-        print(f"✓ Read {row_count:,} rows from Parquet files")
-        
-        # Create Iceberg table using DataFrame write API
-        # Select only the columns needed for analysis (company, fare)
-        print(f"Creating Iceberg table '{iceberg_table}'...")
-        
-        # Write to Iceberg table using Spark DataFrame API
-        parquet_df.select("company", "fare").write \
-            .format("iceberg") \
-            .mode("overwrite") \
-            .saveAsTable(f"{ICEBERG_CATALOG_NAME}.{SCHEMA_NAME}.{iceberg_table}")
-        
-        load_time = time.time() - start_time
-        
-        print(f"✓ Data loaded into Iceberg table in {load_time:.2f} seconds")
-        
-        # Verify row count
-        result_df = spark.sql(f"SELECT COUNT(*) as cnt FROM {ICEBERG_CATALOG_NAME}.{SCHEMA_NAME}.{iceberg_table}")
-        table_row_count = result_df.collect()[0]["cnt"]
-        print(f"✓ Table contains {table_row_count:,} rows")
-        
-        if table_row_count != row_count:
-            print(f"⚠ Warning: Row count mismatch (read {row_count:,}, table has {table_row_count:,})")
-        
-        return True
-    except Exception as e:
-        print(f"✗ Failed to load data via Spark: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
 
 
 def load_data_via_pyarrow(iceberg_cur, parquet_files: List[str], iceberg_table: str) -> bool:
@@ -793,9 +702,11 @@ def run_duckdb_comparison(parquet_files: List[str]) -> Tuple[Optional[float], Op
 
 def main():
     """Main execution function."""
+    logger.info("Entering main()")
     print("="*60)
     print("Trino Iceberg Analysis")
     print("="*60)
+    sys.stdout.flush()
     print(f"Execution mode: {EXECUTION_MODE.upper()}")
     print(f"Parquet directory: {PARQUET_DIR}")
     print(f"Trino URI: {TRINO_URI}")
@@ -875,35 +786,16 @@ def main():
         print(f"✗ Failed to connect to Iceberg catalog: {e}")
         return 1
     
-    # Load data into Iceberg table using Spark (with PyArrow fallback)
-    print("\n" + "="*60)
-    print("Loading data using Spark")
-    print("="*60)
-    
-    spark = create_spark_session()
-    if not spark:
-        print("\n⚠ Spark session creation failed (likely Java version incompatibility)")
-        print("Falling back to PyArrow + Trino INSERT method...")
+    # Load data into Iceberg table using Spark container (with PyArrow fallback)
+    # Spark runs in Docker container - no Java required on host
+    if not run_spark_in_container(STAGING_BUCKET, SCHEMA_NAME, TABLE_NAME):
+        print("\n⚠ Spark container ingestion failed, falling back to PyArrow method...")
         print("="*60)
         
-        # Fallback to PyArrow method
+        # Fallback to PyArrow method (slower but doesn't require Spark)
         if not load_data_via_pyarrow(iceberg_cur, parquet_files, TABLE_NAME):
             print("Failed to load data into Iceberg table")
             return 1
-    else:
-        try:
-            if not load_data_via_spark(spark, s3_path, TABLE_NAME):
-                print("\n⚠ Spark loading failed, falling back to PyArrow method...")
-                if not load_data_via_pyarrow(iceberg_cur, parquet_files, TABLE_NAME):
-                    print("Failed to load data into Iceberg table")
-                    return 1
-        finally:
-            # Clean up Spark session
-            try:
-                spark.stop()
-                print("✓ Spark session stopped")
-            except:
-                pass
     
     # Run analysis query
     full_table_name = f"{ICEBERG_CATALOG_NAME}.{SCHEMA_NAME}.{TABLE_NAME}"

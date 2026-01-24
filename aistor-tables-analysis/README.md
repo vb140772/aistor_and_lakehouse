@@ -13,7 +13,7 @@ This project demonstrates end-to-end integration of **MinIO AIStor Tables** (nat
 | Component | Role | Runs On |
 |-----------|------|---------|
 | MinIO AIStor | Object storage + Iceberg REST Catalog | Docker container |
-| Apache Spark (PySpark) | Data ingestion (Parquet → Iceberg) | Host machine (local mode) |
+| Apache Spark | Data ingestion (Parquet → Iceberg) | Docker container (Java 17 bundled) |
 | Trino | SQL query engine | Docker container |
 | Apache Iceberg | Table format | - |
 
@@ -23,8 +23,9 @@ This project demonstrates end-to-end integration of **MinIO AIStor Tables** (nat
 
 - Python 3.11+
 - Docker and Docker Compose
-- Java 8-21 (Java 24+ incompatible with Spark)
 - MinIO AIStor license
+
+> **Note**: No Java installation required - Spark runs in a Docker container with Java 17 bundled.
 
 ### Setup
 
@@ -67,33 +68,28 @@ This project demonstrates end-to-end integration of **MinIO AIStor Tables** (nat
 flowchart TB
     subgraph Local["Host Machine (Python Script)"]
         Script["run_trino_analysis.py"]
-        Files["Local Parquet Files<br/>424 files, 4.2GB"]
-        Spark["PySpark<br/>(local mode)"]
+        Files["Local Parquet Files"]
     end
 
     subgraph Docker["Docker Network: lakehouse"]
         subgraph MinIO["MinIO AIStor Container"]
             Storage["Object Storage<br/>S3 API: 9000"]
-            Catalog["Iceberg REST Catalog<br/>/_iceberg/v1/..."]
+            Catalog["Iceberg REST Catalog"]
         end
         
-        Trino["Trino Container<br/>(Single Node)"]
+        Spark["Spark Container<br/>Java 17 bundled"]
+        Trino["Trino Container"]
     end
 
     Files -->|"1. Upload (boto3)"| Storage
-    Spark -->|"2. Read (s3a://)"| Storage
+    Script -->|"2. docker exec spark-submit"| Spark
     Spark -->|"3. Write Iceberg"| Storage
     Spark -.->|"Create table"| Catalog
     
-    Trino -->|"4. REST API<br/>SigV4 Auth"| Catalog
+    Trino -->|"4. REST API + SigV4"| Catalog
     Trino -->|"Read data"| Storage
     
-    Script -->|"5. SQL Query<br/>(trino client)"| Trino
-
-    style MinIO fill:#ff6b6b,color:#fff
-    style Catalog fill:#4ecdc4,color:#fff
-    style Trino fill:#45b7d1,color:#fff
-    style Spark fill:#f9ca24,color:#000
+    Script -->|"5. SQL Query"| Trino
 ```
 
 ### Data Flow
@@ -108,9 +104,10 @@ flowchart TB
 aistor-tables-analysis/
 ├── analysis/
 │   ├── run_trino_analysis.py    # Main analysis script
+│   ├── spark_ingest.py          # Spark ingestion (runs in container)
 │   └── sigv4.py                 # SigV4 authentication
 ├── docker/
-│   ├── docker-compose.yaml      # MinIO + Trino services
+│   ├── docker-compose.yaml      # MinIO + Trino + Spark services
 │   ├── .env.example             # Environment template
 │   └── .env                     # Your configuration (gitignored)
 ├── scripts/
@@ -136,50 +133,19 @@ aistor-tables-analysis/
 | `WAREHOUSE` | `trinotutorial` | Iceberg warehouse name |
 | `PARQUET_DIR` | `./data/parquet` | Local Parquet files |
 
-### Java Version
-
-Spark requires Java 8-21. Java 24+ causes:
-```
-java.lang.UnsupportedOperationException: getSubject is not supported
-```
-
-**Fix**:
-```bash
-# macOS
-brew install openjdk@21
-export JAVA_HOME=/opt/homebrew/opt/openjdk@21
-
-# Linux
-sudo apt install openjdk-21-jdk
-export JAVA_HOME=/usr/lib/jvm/java-21-openjdk
-```
-
 ## Spark Configuration
 
-Spark connects to AIStor's Iceberg REST Catalog with SigV4 authentication:
+Spark runs inside a Docker container with Java 17 bundled. The Python script invokes Spark via `docker exec`:
 
-```python
-spark = (
-    SparkSession.builder
-    .config("spark.jars.packages",
-            "org.apache.iceberg:iceberg-spark-runtime-4.0_2.13:1.10.1,"
-            "org.apache.iceberg:iceberg-aws-bundle:1.10.1,"
-            "org.apache.hadoop:hadoop-aws:3.3.4")
-    
-    # Catalog Configuration
-    .config("spark.sql.catalog.tutorial_catalog", "org.apache.iceberg.spark.SparkCatalog")
-    .config("spark.sql.catalog.tutorial_catalog.type", "rest")
-    .config("spark.sql.catalog.tutorial_catalog.uri", "http://localhost:9000/_iceberg")
-    .config("spark.sql.catalog.tutorial_catalog.warehouse", "trinotutorial")
-    
-    # SigV4 Authentication
-    .config("spark.sql.catalog.tutorial_catalog.rest.sigv4-enabled", "true")
-    .config("spark.sql.catalog.tutorial_catalog.rest.signing-name", "s3tables")
-    .config("spark.sql.catalog.tutorial_catalog.rest.signing-region", "us-east-1")
-    
-    .getOrCreate()
-)
+```bash
+docker exec docker-spark-1 spark-submit \
+    --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.6.1,... \
+    /app/analysis/spark_ingest.py \
+    --warehouse trinotutorial \
+    --minio-host http://minio:9000
 ```
+
+Spark connects to AIStor's Iceberg REST Catalog with SigV4 authentication. See `analysis/spark_ingest.py` for the full configuration.
 
 ## Trino Configuration
 
@@ -208,20 +174,11 @@ WITH (
 
 **Fix**: Ensure Trino catalog uses `http://minio:9000` (Docker network name).
 
-### Spark Java Compatibility
+### Spark Container Not Running
 
-**Symptom**: `java.lang.UnsupportedOperationException: getSubject is not supported`
+**Symptom**: `Error: No such container: docker-spark-1`
 
-**Fix**: Use Java 8-21 (see Java Version section above).
-
-### S3A NumberFormatException
-
-**Symptom**: `java.lang.NumberFormatException: For input string: "60s"`
-
-**Fix**: Use milliseconds in Spark config:
-```python
-.config("spark.hadoop.fs.s3a.connection.timeout", "60000")  # Not "60s"
-```
+**Fix**: Make sure services are started with `./scripts/start_services.sh`
 
 ### Validation Commands
 
@@ -234,6 +191,9 @@ curl http://localhost:9999/v1/status
 
 # Trino CLI query
 docker exec -it docker-trino-1 trino --execute "SHOW CATALOGS"
+
+# Check Spark container
+docker exec docker-spark-1 /opt/spark/bin/spark-submit --version
 ```
 
 ## Performance Results

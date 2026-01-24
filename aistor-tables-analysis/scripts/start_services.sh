@@ -9,7 +9,7 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DOCKER_DIR="${PROJECT_ROOT}/docker"
 
 echo "========================================="
-echo "Starting MinIO AIStor + Trino Services"
+echo "Starting MinIO AIStor + Trino + Spark Services"
 echo "========================================="
 
 # Check if .env file exists
@@ -61,6 +61,17 @@ for i in {1..30}; do
     sleep 2
 done
 
+# Wait for Spark container
+echo -n "Spark: "
+for i in {1..15}; do
+    if docker exec docker-spark-1 /opt/spark/bin/spark-submit --version >/dev/null 2>&1; then
+        echo "ready"
+        break
+    fi
+    echo -n "."
+    sleep 2
+done
+
 echo ""
 echo "========================================="
 echo "Services are running!"
@@ -74,6 +85,9 @@ echo "  Password: minioadmin"
 echo ""
 echo "Trino:"
 echo "  REST API: http://localhost:9999"
+echo ""
+echo "Spark:"
+echo "  Container: docker-spark-1 (Java 17 bundled)"
 echo ""
 echo "To run analysis:"
 echo "  ./scripts/run_trino_analysis.sh"

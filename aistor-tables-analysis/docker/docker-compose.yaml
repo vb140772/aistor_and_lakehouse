@@ -44,8 +44,28 @@ services:
     networks:
       - lakehouse
 
+  spark:
+    image: apache/spark:3.5.3-java17
+    hostname: spark
+    user: root  # Run as root to avoid permission issues
+    environment:
+      - SPARK_MODE=master
+      - SPARK_USER=root
+    volumes:
+      - ../analysis:/app/analysis:ro
+      - spark_ivy_cache:/root/.ivy2  # Ivy cache for Maven deps
+      - spark_tmp:/tmp  # Spark temp directory
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - lakehouse
+    command: sleep infinity  # Keep container running for spark-submit
+
 networks:
   lakehouse:
 
 volumes:
   minio_data:
+  spark_ivy_cache:
+  spark_tmp:
