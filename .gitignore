@@ -1,6 +1,9 @@
 # Local data directories
 data/
 
+# Docker environment (contains license)
+docker/.env
+
 # Terraform files
 .terraform/
 *.tfplan

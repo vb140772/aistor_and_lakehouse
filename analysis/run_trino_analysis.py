@@ -17,15 +17,18 @@ from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 from trino.dbapi import connect
 
-# Add sigv4 module path if running in container
-if os.path.exists('/home/jovyan'):
-    sys.path.append('/home/jovyan')
+# Import sigv4 module for REST API authentication
+# Try local module first, then fall back to container path
+try:
+    # Try importing from same directory (analysis package)
+    from . import sigv4
+except ImportError:
     try:
+        # Try importing as standalone module (when run directly)
         import sigv4
     except ImportError:
+        # sigv4 not available - warehouse REST API calls will be skipped
         sigv4 = None
-else:
-    sigv4 = None
 
 # Configuration from environment variables
 TRINO_URI = os.getenv("TRINO_URI", "http://localhost:8080")

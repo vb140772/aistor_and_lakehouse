@@ -1,0 +1,50 @@
+#!/bin/bash
+# Stop MinIO AIStor + Trino services
+# Usage: ./stop_services.sh [--clean]
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DOCKER_DIR="${PROJECT_ROOT}/docker"
+
+# Parse arguments
+CLEAN=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --clean)
+            CLEAN=true
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: $0 [--clean]"
+            echo "  --clean: Also remove volumes (deletes all data)"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+
+echo "========================================="
+echo "Stopping MinIO AIStor + Trino Services"
+echo "========================================="
+
+cd "${DOCKER_DIR}"
+
+if [ "$CLEAN" = true ]; then
+    echo "Stopping services and removing volumes..."
+    docker compose down -v
+    echo "All data has been removed."
+else
+    echo "Stopping services (data preserved)..."
+    docker compose down
+    echo ""
+    echo "Data is preserved in Docker volumes."
+    echo "Use --clean to remove all data."
+fi
+
+echo ""
+echo "Services stopped."

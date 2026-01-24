@@ -117,16 +117,16 @@ sequenceDiagram
 
 ### Docker Compose Stack
 
-The test uses two Docker Compose configurations:
+This repository includes a self-contained Docker Compose configuration for MinIO AIStor + Trino.
 
-#### 1. Quickstart (Single Trino Instance)
-
-**File**: `docker-compose-quickstart.yaml`
+**File**: `docker/docker-compose.yaml`
 
 ```yaml
 services:
   minio:
-    image: ${MINIO_TEST_IMAGE}
+    image: ${MINIO_TEST_IMAGE:-quay.io/minio/aistor/minio:EDGE}
+    hostname: minio
+    command: server --console-address ":9001" /data
     ports:
       - "9000:9000"   # S3 API
       - "9001:9001"   # Console
@@ -134,74 +134,63 @@ services:
       MINIO_LICENSE: ${MINIO_LICENSE}
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
 
   trino:
-    image: trinodb/trino:477
+    image: ${TRINO_IMAGE:-trinodb/trino:477}
+    hostname: trino
+    environment:
+      - CATALOG_MANAGEMENT=dynamic
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-I", "http://localhost:8080/v1/status"]
+      interval: 2s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
     ports:
       - "9999:8080"   # Trino REST API
-    environment:
-      CATALOG_MANAGEMENT: dynamic
 
-  jupyter:  # For tutorials only, NOT used by run_trino_analysis.py
-    image: quay.io/jupyter/pyspark-notebook:2024-10-14
-    ports:
-      - "8888:8888"   # Jupyter Notebook
+networks:
+  lakehouse:
+
+volumes:
+  minio_data:
 ```
 
-> **Note**: The `run_trino_analysis.py` script runs PySpark **locally on the host machine**, 
-> not via Jupyter. Jupyter is included for interactive tutorials (e.g., `TrinoTutorial.ipynb`).
+### Start Commands
 
-**Start Command**:
+**Using helper script (recommended)**:
 ```bash
-cd aistor-tables-docs
-docker compose -f docker-compose-quickstart.yaml up -d
+./scripts/start_services.sh
 ```
 
-#### 2. Trino Cluster (Multi-Node) - NOT TESTED
-
-> **Note**: The multi-node Trino cluster configuration was created but **not successfully tested** 
-> with the analysis script. The actual test results documented here are from the **single-node** 
-> Trino deployment. The cluster configuration is provided for reference but may require 
-> additional debugging.
-
-**File**: `docker-compose-trino-cluster.yaml`
-
-```yaml
-services:
-  minio:
-    # Same as quickstart
-
-  trino-coordinator:
-    image: trinodb/trino:477
-    hostname: trino-coordinator
-    ports:
-      - "9999:8080"
-    volumes:
-      - ./trino-config/coordinator/config.properties:/etc/trino/config.properties
-      - ./trino-config/coordinator/node.properties:/etc/trino/node.properties
-
-  trino-worker-1:
-    image: trinodb/trino:477
-    hostname: trino-worker-1
-    volumes:
-      - ./trino-config/worker/config.properties:/etc/trino/config.properties
-      - ./trino-config/worker/node.properties.worker1:/etc/trino/node.properties
-
-  trino-worker-2:
-    # Similar to worker-1
-
-  trino-worker-3:
-    # Similar to worker-1
-```
-
-**Known Issues** (encountered but not fully resolved):
-- Permission denied errors for `/var/trino/data` directory
-- Port 5005/5006 conflicts with debug ports
-- Workers may not register with coordinator properly
-
-**Start Command**:
+**Using Docker Compose directly**:
 ```bash
-docker compose -f docker-compose-trino-cluster.yaml up -d
+cd docker
+docker compose up -d
+```
+
+### Stop Commands
+
+**Using helper script**:
+```bash
+./scripts/stop_services.sh        # Preserve data
+./scripts/stop_services.sh --clean  # Remove all data
+```
+
+**Using Docker Compose directly**:
+```bash
+cd docker
+docker compose down       # Preserve data
+docker compose down -v    # Remove all data
 ```
 
 ### Network Architecture
@@ -379,12 +368,12 @@ WITH (
 
 ### Trino Cluster Configuration (Not Tested)
 
-> **Warning**: This cluster configuration was created but not successfully tested.
-> Use the single-node quickstart for verified functionality.
+> **Warning**: Multi-node Trino cluster was not successfully tested with this analysis script.
+> Use the single-node deployment (`docker/docker-compose.yaml`) for verified functionality.
 
-For multi-node Trino:
+For reference, multi-node Trino requires these configurations:
 
-**Coordinator** (`trino-config/coordinator/config.properties`):
+**Coordinator config.properties**:
 ```properties
 coordinator=true
 node-scheduler.include-coordinator=false
@@ -392,7 +381,7 @@ http-server.http.port=8080
 discovery.uri=http://trino-coordinator:8080
 ```
 
-**Worker** (`trino-config/worker/config.properties`):
+**Worker config.properties**:
 ```properties
 coordinator=false
 http-server.http.port=8080
@@ -589,10 +578,10 @@ docker exec -it trino trino --execute "SHOW CATALOGS"
 - **Dataset**: ~58 million taxi trips
 - **Files**: 424 Parquet files (4.2GB total)
 - **Query**: GROUP BY company with aggregations
-- **Trino Configuration**: Single-node (quickstart deployment)
+- **Trino Configuration**: Single-node deployment (`docker/docker-compose.yaml`)
 
-> **Note**: These results are from the **single-node Trino** deployment (`docker-compose-quickstart.yaml`).
-> The multi-node cluster was not successfully tested.
+> **Note**: These results are from the **single-node Trino** deployment.
+> Multi-node cluster was not successfully tested.
 
 ### Results
 
@@ -629,12 +618,14 @@ If the multi-node cluster were working:
 
 | File | Purpose |
 |------|---------|
-| `run_trino_analysis.py` | Main test script |
-| `run_trino_analysis.sh` | Shell wrapper with env vars |
-| `docker-compose-quickstart.yaml` | Single Trino deployment |
-| `docker-compose-trino-cluster.yaml` | Multi-node Trino cluster |
-| `trino-config/coordinator/` | Trino coordinator config |
-| `trino-config/worker/` | Trino worker config |
+| `analysis/run_trino_analysis.py` | Main test script |
+| `analysis/sigv4.py` | SigV4 authentication for REST API |
+| `scripts/run_trino_analysis.sh` | Shell wrapper with env vars |
+| `scripts/start_services.sh` | Start MinIO + Trino services |
+| `scripts/stop_services.sh` | Stop services |
+| `docker/docker-compose.yaml` | MinIO + Trino deployment |
+| `docker/.env` | Environment configuration |
+| `docker/.env.example` | Environment template |
 
 ---
 

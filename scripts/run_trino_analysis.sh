@@ -66,23 +66,68 @@ fi
 echo "Found ${PARQUET_COUNT} Parquet file(s)"
 echo ""
 
+# Check Java version - Spark requires Java 8-21 (Java 24+ is incompatible)
+if [ -d "/opt/homebrew/opt/openjdk@21" ]; then
+    export JAVA_HOME=/opt/homebrew/opt/openjdk@21
+    export PATH="$JAVA_HOME/bin:$PATH"
+    echo "Using Java 21 for Spark compatibility"
+elif [ -d "/usr/lib/jvm/java-21-openjdk" ]; then
+    export JAVA_HOME=/usr/lib/jvm/java-21-openjdk
+    export PATH="$JAVA_HOME/bin:$PATH"
+    echo "Using Java 21 for Spark compatibility"
+else
+    JAVA_VERSION=$(java -version 2>&1 | head -1 | cut -d'"' -f2 | cut -d'.' -f1)
+    if [ "$JAVA_VERSION" -ge 24 ] 2>/dev/null; then
+        echo "Warning: Java $JAVA_VERSION detected. Spark requires Java 8-21."
+        echo "  Install Java 21: brew install openjdk@21"
+        echo "  Then run with: JAVA_HOME=/opt/homebrew/opt/openjdk@21 $0"
+    fi
+fi
+echo ""
+
 # Check if Trino and MinIO are accessible
 # Default Trino port is 9999 (mapped from docker-compose) or 8080 (standard)
 TRINO_URI="${TRINO_URI:-http://localhost:9999}"
 MINIO_HOST="${MINIO_HOST:-http://localhost:9000}"
 
-echo "Checking Trino connectivity..."
-if ! curl -s -f "${TRINO_URI}/v1/info" >/dev/null 2>&1; then
-    echo "Warning: Trino may not be accessible at ${TRINO_URI}"
-    echo "  Make sure Trino is running (e.g., docker compose up -d trino)"
+SERVICES_MISSING=false
+
+echo "Checking service connectivity..."
+echo ""
+
+echo -n "MinIO (${MINIO_HOST}): "
+if curl -s -f "${MINIO_HOST}/minio/health/live" >/dev/null 2>&1; then
+    echo "OK"
+else
+    echo "NOT AVAILABLE"
+    SERVICES_MISSING=true
 fi
 
-echo "Checking MinIO connectivity..."
-if ! curl -s -f "${MINIO_HOST}/minio/health/live" >/dev/null 2>&1; then
-    echo "Warning: MinIO may not be accessible at ${MINIO_HOST}"
-    echo "  Make sure MinIO is running (e.g., docker compose up -d minio)"
+echo -n "Trino (${TRINO_URI}): "
+if curl -s -f "${TRINO_URI}/v1/info" >/dev/null 2>&1; then
+    echo "OK"
+else
+    echo "NOT AVAILABLE"
+    SERVICES_MISSING=true
 fi
 
+echo ""
+
+if [ "$SERVICES_MISSING" = true ]; then
+    echo "========================================="
+    echo "ERROR: Required services are not running"
+    echo "========================================="
+    echo ""
+    echo "Please start the services first:"
+    echo "  ./scripts/start_services.sh"
+    echo ""
+    echo "Or manually with Docker Compose:"
+    echo "  cd docker && docker compose up -d"
+    echo ""
+    exit 1
+fi
+
+echo "All services are available."
 echo ""
 
 # Change to project root for relative paths
