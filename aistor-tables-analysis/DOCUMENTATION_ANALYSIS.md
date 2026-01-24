@@ -6,7 +6,7 @@ The documentation at https://staging.docs.min.dev/aistor-object-store-docs/279-a
 
 ## Detailed Analysis
 
-### ✅ PyIceberg Configuration
+### PyIceberg Configuration
 **Status**: Complete and sufficient
 
 The PyIceberg example includes all necessary properties:
@@ -14,7 +14,7 @@ The PyIceberg example includes all necessary properties:
 - `rest.sigv4-enabled`, `rest.signing-name`, `rest.signing-region`
 - `s3.access-key-id`, `s3.secret-access-key`, `s3.endpoint`
 
-### ❌ Spark Configuration
+### Spark Configuration
 **Status**: Incomplete - Missing critical properties
 
 #### What's Missing:
@@ -77,13 +77,7 @@ The PyIceberg example includes all necessary properties:
                   "org.apache.hadoop:hadoop-aws:3.3.4")
    ```
 
-#### What's Present (but incomplete):
-- Basic catalog class and URI configuration
-- Warehouse name
-- SigV4 enabled flag
-- Signing name
-
-### ❌ Trino Configuration
+### Trino Configuration
 **Status**: Completely missing
 
 The documentation provides **no Trino example**, yet Trino is a critical query engine for AIStor Tables. Users need:
@@ -152,65 +146,4 @@ WITH (
 
 ## Working Configuration Examples
 
-### Complete Spark Configuration (from our implementation):
-```python
-spark = (
-    SparkSession.builder
-    .appName("AIStor Tables")
-    .config("spark.jars.packages", 
-            "org.apache.iceberg:iceberg-spark-runtime-4.0_2.13:1.10.1," +
-            "org.apache.iceberg:iceberg-aws-bundle:1.10.1," +
-            "org.apache.hadoop:hadoop-aws:3.3.4")
-    .config("spark.sql.extensions",
-            "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
-    .config("spark.sql.catalog.aistor", "org.apache.iceberg.spark.SparkCatalog")
-    .config("spark.sql.catalog.aistor.type", "rest")
-    .config("spark.sql.catalog.aistor.uri", "http://localhost:9000/_iceberg")
-    .config("spark.sql.catalog.aistor.warehouse", "analytics")
-    .config("spark.sql.catalog.aistor.rest.endpoint", "http://localhost:9000")
-    .config("spark.sql.catalog.aistor.rest.access-key-id", "minioadmin")
-    .config("spark.sql.catalog.aistor.rest.secret-access-key", "minioadmin")
-    .config("spark.sql.catalog.aistor.rest.sigv4-enabled", "true")
-    .config("spark.sql.catalog.aistor.rest.signing-name", "s3tables")
-    .config("spark.sql.catalog.aistor.rest.signing-region", "us-east-1")
-    .config("spark.sql.catalog.aistor.s3.access-key-id", "minioadmin")
-    .config("spark.sql.catalog.aistor.s3.secret-access-key", "minioadmin")
-    .config("spark.sql.catalog.aistor.s3.endpoint", "http://localhost:9000")
-    .config("spark.sql.catalog.aistor.s3.path-style-access", "true")
-    .config("spark.hadoop.fs.s3a.endpoint", "localhost:9000")
-    .config("spark.hadoop.fs.s3a.access.key", "minioadmin")
-    .config("spark.hadoop.fs.s3a.secret.key", "minioadmin")
-    .config("spark.hadoop.fs.s3a.path.style.access", "true")
-    .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
-    .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
-    .config("spark.hadoop.fs.s3a.aws.credentials.provider",
-            "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
-    .getOrCreate()
-)
-```
-
-### Complete Trino Configuration (from our implementation):
-```sql
-CREATE CATALOG tutorial_catalog USING iceberg
-WITH (
-    "iceberg.catalog.type" = 'rest',
-    "iceberg.rest-catalog.uri" = 'http://localhost:9000/_iceberg',
-    "iceberg.rest-catalog.warehouse" = 'analytics',
-    "iceberg.rest-catalog.security" = 'SIGV4',
-    "iceberg.rest-catalog.vended-credentials-enabled" = 'true',
-    "iceberg.unique-table-location" = 'true',
-    "iceberg.rest-catalog.signing-name" = 's3tables',
-    "iceberg.rest-catalog.view-endpoints-enabled" = 'true',
-    "s3.region" = 'dummy',
-    "s3.aws-access-key" = 'minioadmin',
-    "s3.aws-secret-key" = 'minioadmin',
-    "s3.endpoint" = 'http://localhost:9000',
-    "s3.path-style-access" = 'true',
-    "fs.hadoop.enabled" = 'false',
-    "fs.native-s3.enabled" = 'true'
-);
-```
-
-## Conclusion
-
-The current documentation is **insufficient** for production use. While it provides a foundation, users will encounter authentication failures, data access issues, and complete lack of guidance for Trino. The documentation should be expanded to include complete, working configurations for all major clients.
+See [AISTOR_TABLES_TEST_GUIDE.md](AISTOR_TABLES_TEST_GUIDE.md) for complete, tested configurations for both Spark and Trino.

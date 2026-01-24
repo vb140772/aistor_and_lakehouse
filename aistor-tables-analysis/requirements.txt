@@ -1,0 +1,20 @@
+# AIStor Tables Analysis dependencies
+
+# Trino client
+trino>=0.330.0
+
+# Apache Spark for data loading
+pyspark>=3.5.0
+
+# AWS SDK for S3 and SigV4 authentication
+boto3>=1.28.0
+
+# Data processing
+pyarrow>=14.0.0
+pandas>=2.0.0
+
+# HTTP requests for REST API
+requests>=2.28.0
+
+# Optional: DuckDB for comparison
+duckdb>=0.9.0

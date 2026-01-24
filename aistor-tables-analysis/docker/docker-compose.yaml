@@ -1,5 +1,5 @@
 # MinIO AIStor + Trino Docker Compose
-# Standalone configuration for aistor_and_lakehouse
+# Standalone configuration for AIStor Tables Analysis
 # Usage: docker compose up -d
 
 services:

@@ -1,4 +1,0 @@
-duckdb>=0.9.0
-trino>=0.330.0
-boto3>=1.28.0
-pyarrow>=14.0.0

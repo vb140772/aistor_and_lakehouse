@@ -42,7 +42,7 @@ flowchart TB
         Script --> DuckDB
     end
 
-    subgraph Docker["Docker Network: iceberg_tests"]
+    subgraph Docker["Docker Network: lakehouse"]
         subgraph MinIO["MinIO AIStor Container"]
             Storage["Object Storage<br/>S3 API: 9000"]
             Catalog["Iceberg REST Catalog<br/>/_iceberg/v1/..."]
@@ -117,8 +117,6 @@ sequenceDiagram
 
 ### Docker Compose Stack
 
-This repository includes a self-contained Docker Compose configuration for MinIO AIStor + Trino.
-
 **File**: `docker/docker-compose.yaml`
 
 ```yaml
@@ -167,59 +165,18 @@ volumes:
 
 ### Start Commands
 
-**Using helper script (recommended)**:
 ```bash
 ./scripts/start_services.sh
 ```
 
-**Using Docker Compose directly**:
-```bash
-cd docker
-docker compose up -d
-```
-
 ### Stop Commands
 
-**Using helper script**:
 ```bash
 ./scripts/stop_services.sh        # Preserve data
 ./scripts/stop_services.sh --clean  # Remove all data
 ```
 
-**Using Docker Compose directly**:
-```bash
-cd docker
-docker compose down       # Preserve data
-docker compose down -v    # Remove all data
-```
-
 ### Network Architecture
-
-```mermaid
-flowchart LR
-    subgraph Host["Host Machine"]
-        Script["Python Script<br/>run_trino_analysis.py"]
-    end
-
-    subgraph Docker["Docker Network: iceberg_tests"]
-        subgraph MinIOContainer["minio container"]
-            MinIO["MinIO AIStor<br/>S3: 9000<br/>Console: 9001"]
-        end
-        
-        subgraph TrinoContainer["trino container"]
-            Trino["Trino Server<br/>Port: 8080"]
-            Note["Uses: minio:9000<br/>NOT localhost:9000"]
-        end
-    end
-
-    Script -->|"localhost:9000<br/>(S3 API)"| MinIO
-    Script -->|"localhost:9999<br/>(Trino API)"| Trino
-    Trino -->|"minio:9000<br/>(internal Docker DNS)"| MinIO
-
-    style MinIO fill:#ff6b6b,color:#fff
-    style Trino fill:#45b7d1,color:#fff
-    style Script fill:#f9ca24,color:#000
-```
 
 > **CRITICAL**: The script uses TWO different MinIO hostnames:
 > - `MINIO_HOST = "http://localhost:9000"` — for Python/Spark on host
@@ -270,34 +227,9 @@ spark = (
     .config("spark.sql.catalog.tutorial_catalog.s3.endpoint", "http://localhost:9000")
     .config("spark.sql.catalog.tutorial_catalog.s3.path-style-access", "true")
     
-    # S3A Filesystem (for reading Parquet from S3)
-    .config("spark.hadoop.fs.s3a.endpoint", "localhost:9000")
-    .config("spark.hadoop.fs.s3a.access.key", "minioadmin")
-    .config("spark.hadoop.fs.s3a.secret.key", "minioadmin")
-    .config("spark.hadoop.fs.s3a.path.style.access", "true")
-    .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
-    .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
-    .config("spark.hadoop.fs.s3a.aws.credentials.provider",
-            "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
-    
-    # S3A Timeouts (MUST be numeric, not duration strings!)
-    .config("spark.hadoop.fs.s3a.connection.timeout", "60000")
-    .config("spark.hadoop.fs.s3a.connection.establish.timeout", "60000")
-    .config("spark.hadoop.fs.s3a.multipart.purge.age", "86400")
-    
     .getOrCreate()
 )
 ```
-
-### Key Configuration Groups
-
-| Group | Purpose | Critical Settings |
-|-------|---------|-------------------|
-| **JAR Dependencies** | Load Iceberg + S3 support | `iceberg-spark-runtime`, `iceberg-aws-bundle`, `hadoop-aws` |
-| **Catalog** | Connect to AIStor | `type=rest`, `uri`, `warehouse` |
-| **REST Auth** | SigV4 for catalog API | `sigv4-enabled`, `signing-name`, credentials |
-| **S3 Access** | Read/write data files | `s3.endpoint`, `s3.path-style-access`, credentials |
-| **S3A Hadoop** | Read Parquet from staging | `fs.s3a.endpoint`, `fs.s3a.path.style.access` |
 
 ### Java Version Compatibility
 
@@ -338,9 +270,6 @@ WITH (
     "iceberg.rest-catalog.vended-credentials-enabled" = 'true',
     "iceberg.rest-catalog.view-endpoints-enabled" = 'true',
     
-    -- Table Location
-    "iceberg.unique-table-location" = 'true',
-    
     -- S3 Configuration
     "s3.region" = 'dummy',
     "s3.aws-access-key" = 'minioadmin',
@@ -354,122 +283,11 @@ WITH (
 );
 ```
 
-### Key Properties Explained
-
-| Property | Value | Purpose |
-|----------|-------|---------|
-| `iceberg.catalog.type` | `rest` | Use Iceberg REST Catalog protocol |
-| `iceberg.rest-catalog.uri` | `http://minio:9000/_iceberg` | AIStor catalog endpoint |
-| `iceberg.rest-catalog.security` | `SIGV4` | AWS-style authentication |
-| `iceberg.rest-catalog.signing-name` | `s3tables` | AIStor-specific service name |
-| `iceberg.rest-catalog.vended-credentials-enabled` | `true` | Get S3 creds from catalog |
-| `s3.path-style-access` | `true` | Required for MinIO |
-| `fs.native-s3.enabled` | `true` | Use Trino's native S3 (faster) |
-
-### Trino Cluster Configuration (Not Tested)
-
-> **Warning**: Multi-node Trino cluster was not successfully tested with this analysis script.
-> Use the single-node deployment (`docker/docker-compose.yaml`) for verified functionality.
-
-For reference, multi-node Trino requires these configurations:
-
-**Coordinator config.properties**:
-```properties
-coordinator=true
-node-scheduler.include-coordinator=false
-http-server.http.port=8080
-discovery.uri=http://trino-coordinator:8080
-```
-
-**Worker config.properties**:
-```properties
-coordinator=false
-http-server.http.port=8080
-discovery.uri=http://trino-coordinator:8080
-```
-
 ---
 
 ## Test Execution Flow
 
-### Step-by-Step Process
-
-```mermaid
-flowchart TD
-    subgraph Phase1["1. INITIALIZATION"]
-        I1[Load environment variables]
-        I2[Validate PARQUET_DIR exists]
-        I3[Find Parquet files<br/>424 files, 4.2GB]
-        I1 --> I2 --> I3
-    end
-
-    subgraph Phase2["2. UPLOAD TO MINIO"]
-        U1[Create staging bucket]
-        U2[Upload Parquet files]
-        U3[Return S3 path prefix]
-        U1 --> U2 --> U3
-    end
-
-    subgraph Phase3["3. WAREHOUSE SETUP"]
-        W1[Create bucket if needed]
-        W2[Check warehouse via REST API]
-        W3[Create warehouse<br/>upgrade-existing=true]
-        W1 --> W2 --> W3
-    end
-
-    subgraph Phase4["4. SPARK DATA INGESTION"]
-        S1[Create Spark session]
-        S2[Create namespace: taxi_analysis]
-        S3[Read Parquet from s3a://]
-        S4[Write to Iceberg table]
-        S5[Verify row count]
-        S1 --> S2 --> S3 --> S4 --> S5
-    end
-
-    subgraph Phase5["5. TRINO CATALOG SETUP"]
-        T1[Connect to Trino]
-        T2[DROP CATALOG IF EXISTS]
-        T3[CREATE CATALOG]
-        T4[Verify schema visibility]
-        T1 --> T2 --> T3 --> T4
-    end
-
-    subgraph Phase6["6. QUERY EXECUTION"]
-        Q1[Run analysis query]
-        Q2[Measure execution time]
-        Q3[Collect results]
-        Q1 --> Q2 --> Q3
-    end
-
-    subgraph Phase7["7. COMPARISON (Optional)"]
-        C1[Run DuckDB query]
-        C2[Compare times]
-        C3[Verify consistency]
-        C1 --> C2 --> C3
-    end
-
-    subgraph Phase8["8. RESULTS"]
-        R1[Print results table]
-        R2[Display metrics]
-        R3[Show summary]
-        R1 --> R2 --> R3
-    end
-
-    Phase1 --> Phase2 --> Phase3 --> Phase4 --> Phase5 --> Phase6 --> Phase7 --> Phase8
-
-    style Phase1 fill:#3498db,color:#fff
-    style Phase2 fill:#e74c3c,color:#fff
-    style Phase3 fill:#9b59b6,color:#fff
-    style Phase4 fill:#f39c12,color:#fff
-    style Phase5 fill:#1abc9c,color:#fff
-    style Phase6 fill:#2ecc71,color:#fff
-    style Phase7 fill:#95a5a6,color:#fff
-    style Phase8 fill:#27ae60,color:#fff
-```
-
 ### Analysis Query
-
-The test runs this aggregation query on both engines:
 
 ```sql
 SELECT 
@@ -484,32 +302,11 @@ ORDER BY trip_count DESC
 
 ---
 
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TRINO_URI` | `http://localhost:8080` | Trino REST API endpoint |
-| `MINIO_HOST` | `http://localhost:9000` | MinIO S3 endpoint (for Python/Spark) |
-| `MINIO_HOST_FOR_TRINO` | `http://minio:9000` | MinIO endpoint for Trino (Docker) |
-| `MINIO_ACCESS_KEY` | `minioadmin` | MinIO access key |
-| `MINIO_SECRET_KEY` | `minioadmin` | MinIO secret key |
-| `WAREHOUSE` | `trinotutorial` | Iceberg warehouse name |
-| `PARQUET_DIR` | `./data/parquet` | Local Parquet files directory |
-| `COMPARE_WITH_DUCKDB` | `false` | Enable DuckDB comparison |
-| `EXECUTION_MODE` | `local` | Execution mode (local/docker) |
-
----
-
 ## Troubleshooting
 
 ### Common Issues
 
 #### 1. "Cannot obtain metadata" Error
-
-**Symptom**:
-```
-TrinoExternalError: ICEBERG_CATALOG_ERROR: Cannot obtain metadata
-```
 
 **Cause**: Trino is trying to reach MinIO using `localhost:9000` instead of `minio:9000`.
 
@@ -517,12 +314,7 @@ TrinoExternalError: ICEBERG_CATALOG_ERROR: Cannot obtain metadata
 
 #### 2. Spark Java Compatibility
 
-**Symptom**:
-```
-java.lang.UnsupportedOperationException: getSubject is not supported
-```
-
-**Cause**: Java 24+ is incompatible with Spark/Hadoop.
+**Symptom**: `java.lang.UnsupportedOperationException: getSubject is not supported`
 
 **Fix**: Use Java 8-21:
 ```bash
@@ -531,26 +323,12 @@ export JAVA_HOME=/opt/homebrew/opt/openjdk@21
 
 #### 3. S3A NumberFormatException
 
-**Symptom**:
-```
-java.lang.NumberFormatException: For input string: "60s"
-```
-
-**Cause**: S3A properties expect numeric values, not duration strings.
+**Symptom**: `java.lang.NumberFormatException: For input string: "60s"`
 
 **Fix**: Use milliseconds:
 ```python
 .config("spark.hadoop.fs.s3a.connection.timeout", "60000")  # Not "60s"
 ```
-
-#### 4. Warehouse Already Exists
-
-**Symptom**:
-```
-warehouse name 'trinotutorial' is invalid
-```
-
-**Fix**: The script uses `upgrade-existing=True` to convert existing buckets to warehouses.
 
 ### Validation Commands
 
@@ -560,10 +338,6 @@ curl http://localhost:9000/minio/health/live
 
 # Check Trino health
 curl http://localhost:9999/v1/status
-
-# List warehouses via Iceberg REST API
-curl -X GET http://localhost:9000/_iceberg/v1/warehouses \
-  -H "Authorization: AWS4-HMAC-SHA256 ..."
 
 # Trino CLI query
 docker exec -it trino trino --execute "SHOW CATALOGS"
@@ -578,10 +352,7 @@ docker exec -it trino trino --execute "SHOW CATALOGS"
 - **Dataset**: ~58 million taxi trips
 - **Files**: 424 Parquet files (4.2GB total)
 - **Query**: GROUP BY company with aggregations
-- **Trino Configuration**: Single-node deployment (`docker/docker-compose.yaml`)
-
-> **Note**: These results are from the **single-node Trino** deployment.
-> Multi-node cluster was not successfully tested.
+- **Trino Configuration**: Single-node deployment
 
 ### Results
 
@@ -590,27 +361,12 @@ docker exec -it trino trino --execute "SHOW CATALOGS"
 | **DuckDB** | 0.193s | Local, in-process |
 | **Trino/Iceberg** | 0.465s | Single-node Docker, via REST catalog |
 
-### Breakdown
+### Observations
 
-| Metric | DuckDB | Trino/Iceberg |
-|--------|--------|---------------|
-| **Query Execution** | 0.193s | 0.465s |
-| **Data Loading** | N/A (direct read) | 6.78s (Spark) |
-| **Total Time** | 0.193s | ~7.25s |
-
-**Observations**:
 - DuckDB is **2.41x faster** for single-node local queries
-- Trino includes network overhead (Docker containers) and distributed coordinator logic
-- Trino advantage would emerge with distributed cluster and larger datasets
-- Iceberg provides ACID, time travel, schema evolution (not benchmarked here)
-
-### Expected Cluster Improvements (Theoretical)
-
-If the multi-node cluster were working:
-- **3 workers**: ~30-40% improvement estimated (0.27-0.32s)
-- **5 workers**: ~40-50% improvement estimated (0.23-0.28s)
-
-*These are theoretical estimates, not actual measurements.*
+- Trino includes network overhead (Docker containers)
+- Trino advantage emerges with distributed cluster and larger datasets
+- Iceberg provides ACID, time travel, schema evolution
 
 ---
 
@@ -638,30 +394,9 @@ This test demonstrates a complete data lakehouse architecture using:
 3. **Trino** (single-node) for interactive SQL analytics
 4. **Apache Iceberg** as the open table format
 
-### What Was Successfully Tested
-
-- Spark loading Parquet data into Iceberg tables via AIStor REST catalog
-- Trino (single-node) querying Iceberg tables with SigV4 authentication
-- DuckDB vs Trino performance comparison on the same dataset
-- End-to-end data flow from local files → MinIO → Iceberg → SQL results
-
-### What Was NOT Tested
-
-- Multi-node Trino cluster (configuration created but had startup issues)
-- Cluster performance improvements
-- Large-scale concurrent query workloads
-
 The architecture enables:
 - **Decoupled storage and compute**
 - **Multiple query engines** on the same data
 - **ACID transactions** on object storage
 - **Schema evolution** without data rewriting
 - **Time travel** for data versioning
-
-### Future Work
-
-For production deployments:
-- Debug and test Trino cluster configuration
-- Benchmark cluster performance with 3+ workers
-- Add Spark cluster for large-scale ETL
-- Tune resource allocation based on workload

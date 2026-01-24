@@ -1,5 +1,8 @@
-# Data directory (large files downloaded from GCS)
+# Local data directories
 data/
+
+# Docker environment (contains license)
+docker/.env
 
 # Python
 __pycache__/
@@ -9,9 +12,6 @@ venv/
 
 # DuckDB temporary files
 duckdb_temp/
-
-# Spark metastore
-spark-warehouse/
 
 # OS files
 .DS_Store
