@@ -144,7 +144,12 @@ cd aistor-tables-docs
 docker compose -f docker-compose-quickstart.yaml up -d
 ```
 
-#### 2. Trino Cluster (Multi-Node)
+#### 2. Trino Cluster (Multi-Node) - NOT TESTED
+
+> **Note**: The multi-node Trino cluster configuration was created but **not successfully tested** 
+> with the analysis script. The actual test results documented here are from the **single-node** 
+> Trino deployment. The cluster configuration is provided for reference but may require 
+> additional debugging.
 
 **File**: `docker-compose-trino-cluster.yaml`
 
@@ -175,6 +180,11 @@ services:
   trino-worker-3:
     # Similar to worker-1
 ```
+
+**Known Issues** (encountered but not fully resolved):
+- Permission denied errors for `/var/trino/data` directory
+- Port 5005/5006 conflicts with debug ports
+- Workers may not register with coordinator properly
 
 **Start Command**:
 ```bash
@@ -358,7 +368,10 @@ WITH (
 | `s3.path-style-access` | `true` | Required for MinIO |
 | `fs.native-s3.enabled` | `true` | Use Trino's native S3 (faster) |
 
-### Trino Cluster Configuration
+### Trino Cluster Configuration (Not Tested)
+
+> **Warning**: This cluster configuration was created but not successfully tested.
+> Use the single-node quickstart for verified functionality.
 
 For multi-node Trino:
 
@@ -545,18 +558,39 @@ docker exec -it trino trino --execute "SHOW CATALOGS"
 - **Dataset**: ~58 million taxi trips
 - **Files**: 424 Parquet files (4.2GB total)
 - **Query**: GROUP BY company with aggregations
+- **Trino Configuration**: Single-node (quickstart deployment)
+
+> **Note**: These results are from the **single-node Trino** deployment (`docker-compose-quickstart.yaml`).
+> The multi-node cluster was not successfully tested.
 
 ### Results
 
 | Engine | Execution Time | Notes |
 |--------|----------------|-------|
-| **DuckDB** | 0.193s | Local, single-threaded |
-| **Trino/Iceberg** | 0.465s | Single node, via REST catalog |
+| **DuckDB** | 0.193s | Local, in-process |
+| **Trino/Iceberg** | 0.465s | Single-node Docker, via REST catalog |
+
+### Breakdown
+
+| Metric | DuckDB | Trino/Iceberg |
+|--------|--------|---------------|
+| **Query Execution** | 0.193s | 0.465s |
+| **Data Loading** | N/A (direct read) | 6.78s (Spark) |
+| **Total Time** | 0.193s | ~7.25s |
 
 **Observations**:
-- DuckDB is ~2.4x faster for single-node local queries
-- Trino advantage emerges with distributed workloads and larger datasets
-- Iceberg provides ACID, time travel, schema evolution (not tested here)
+- DuckDB is **2.41x faster** for single-node local queries
+- Trino includes network overhead (Docker containers) and distributed coordinator logic
+- Trino advantage would emerge with distributed cluster and larger datasets
+- Iceberg provides ACID, time travel, schema evolution (not benchmarked here)
+
+### Expected Cluster Improvements (Theoretical)
+
+If the multi-node cluster were working:
+- **3 workers**: ~30-40% improvement estimated (0.27-0.32s)
+- **5 workers**: ~40-50% improvement estimated (0.23-0.28s)
+
+*These are theoretical estimates, not actual measurements.*
 
 ---
 
@@ -579,8 +613,21 @@ This test demonstrates a complete data lakehouse architecture using:
 
 1. **MinIO AIStor** as unified object storage with native Iceberg catalog
 2. **Apache Spark** for scalable data ingestion
-3. **Trino** for interactive SQL analytics
+3. **Trino** (single-node) for interactive SQL analytics
 4. **Apache Iceberg** as the open table format
+
+### What Was Successfully Tested
+
+- Spark loading Parquet data into Iceberg tables via AIStor REST catalog
+- Trino (single-node) querying Iceberg tables with SigV4 authentication
+- DuckDB vs Trino performance comparison on the same dataset
+- End-to-end data flow from local files → MinIO → Iceberg → SQL results
+
+### What Was NOT Tested
+
+- Multi-node Trino cluster (configuration created but had startup issues)
+- Cluster performance improvements
+- Large-scale concurrent query workloads
 
 The architecture enables:
 - **Decoupled storage and compute**
@@ -589,7 +636,10 @@ The architecture enables:
 - **Schema evolution** without data rewriting
 - **Time travel** for data versioning
 
-For production deployments, consider:
-- Trino cluster with 3+ workers for parallelism
-- Spark cluster for large-scale ETL
-- Proper resource allocation and tuning
+### Future Work
+
+For production deployments:
+- Debug and test Trino cluster configuration
+- Benchmark cluster performance with 3+ workers
+- Add Spark cluster for large-scale ETL
+- Tune resource allocation based on workload
