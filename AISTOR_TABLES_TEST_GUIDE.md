@@ -13,13 +13,14 @@ The test validates:
 
 ### Key Technologies
 
-| Component | Role | Version |
+| Component | Role | Runs On |
 |-----------|------|---------|
-| MinIO AIStor | Object storage + Iceberg REST Catalog | Latest |
-| Apache Spark | Data ingestion (Parquet → Iceberg) | 4.0 / 3.5 |
-| Trino | Distributed SQL query engine | 477 |
-| Apache Iceberg | Table format | 1.10.1 / 1.9.1 |
-| DuckDB | Local SQL engine (comparison) | Latest |
+| MinIO AIStor | Object storage + Iceberg REST Catalog | Docker container |
+| Apache Spark (PySpark) | Data ingestion (Parquet → Iceberg) | Host machine (local mode) |
+| Trino | SQL query engine | Docker container |
+| Apache Iceberg | Table format | - |
+| DuckDB | Local SQL engine (comparison) | Host machine |
+| Python script | Orchestration (`run_trino_analysis.py`) | Host machine |
 
 ---
 
@@ -29,35 +30,38 @@ The test validates:
 
 ```mermaid
 flowchart TB
-    subgraph Local["Local Machine"]
+    subgraph Local["Host Machine (Python Script)"]
+        Script["run_trino_analysis.py"]
         Files["Local Parquet Files<br/>424 files, 4.2GB"]
-        Spark["Apache Spark<br/>(PySpark)"]
+        Spark["PySpark<br/>(local mode)"]
         DuckDB["DuckDB<br/>(Optional)"]
         Results["Results<br/>Comparison"]
+        
+        Script --> Files
+        Script --> Spark
+        Script --> DuckDB
     end
 
-    subgraph MinIO["MinIO AIStor"]
-        subgraph Storage["Object Storage"]
-            Staging["Staging Bucket<br/>parquet/"]
-            Warehouse["Iceberg Warehouse<br/>trinotutorial"]
+    subgraph Docker["Docker Network: iceberg_tests"]
+        subgraph MinIO["MinIO AIStor Container"]
+            Storage["Object Storage<br/>S3 API: 9000"]
+            Catalog["Iceberg REST Catalog<br/>/_iceberg/v1/..."]
         end
-        Catalog["Iceberg REST Catalog<br/>/_iceberg/v1/..."]
-    end
-
-    subgraph TrinoDocker["Docker Container"]
-        Trino["Trino<br/>(Single Node)"]
+        
+        Trino["Trino Container<br/>(Single Node)"]
     end
 
     %% Data Flow
-    Files -->|"1. Upload (boto3)"| Staging
-    Staging -->|"2. Read (s3a://)"| Spark
-    Spark -->|"3. Write Iceberg"| Warehouse
+    Files -->|"1. Upload (boto3)"| Storage
+    Spark -->|"2. Read (s3a://)"| Storage
+    Spark -->|"3. Write Iceberg"| Storage
     Spark -.->|"Create table"| Catalog
     
-    Catalog -->|"4. REST API<br/>SigV4 Auth"| Trino
-    Warehouse -->|"Read data"| Trino
+    Trino -->|"4. REST API<br/>SigV4 Auth"| Catalog
+    Trino -->|"Read data"| Storage
     
-    Trino -->|"5. SQL Query"| Results
+    Script -->|"5. SQL Query<br/>(trino client)"| Trino
+    Trino -->|"Results"| Results
     
     Files -->|"Direct read"| DuckDB
     DuckDB -->|"Compare"| Results
@@ -68,7 +72,7 @@ flowchart TB
     style Trino fill:#45b7d1,color:#fff
     style Spark fill:#f9ca24,color:#000
     style DuckDB fill:#6c5ce7,color:#fff
-    style Results fill:#00b894,color:#fff
+    style Script fill:#e17055,color:#fff
 ```
 
 ### Data Flow
@@ -138,11 +142,14 @@ services:
     environment:
       CATALOG_MANAGEMENT: dynamic
 
-  jupyter:
+  jupyter:  # For tutorials only, NOT used by run_trino_analysis.py
     image: quay.io/jupyter/pyspark-notebook:2024-10-14
     ports:
       - "8888:8888"   # Jupyter Notebook
 ```
+
+> **Note**: The `run_trino_analysis.py` script runs PySpark **locally on the host machine**, 
+> not via Jupyter. Jupyter is included for interactive tutorials (e.g., `TrinoTutorial.ipynb`).
 
 **Start Command**:
 ```bash
