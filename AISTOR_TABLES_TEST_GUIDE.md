@@ -27,42 +27,48 @@ The test validates:
 
 ### System Overview
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         AIStor Tables Test Architecture                      │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   ┌──────────────┐      ┌──────────────────────────────────────────────┐    │
-│   │ Local Files  │      │              MinIO AIStor                    │    │
-│   │  (Parquet)   │      │  ┌────────────────┐  ┌────────────────────┐  │    │
-│   │  424 files   │──────│▶ │ Staging Bucket │  │  Iceberg Warehouse │  │    │
-│   │  4.2 GB      │      │  │ (parquet/)     │  │  (trinotutorial)   │  │    │
-│   └──────────────┘      │  └────────────────┘  └────────────────────┘  │    │
-│          │              │          │                    ▲              │    │
-│          │              │          │         ┌──────────┴──────────┐   │    │
-│          ▼              │          │         │ Iceberg REST Catalog│   │    │
-│   ┌──────────────┐      │          │         │   /_iceberg/v1/...  │   │    │
-│   │    Spark     │──────│──────────┘         └─────────────────────┘   │    │
-│   │  Session     │      │                              ▲               │    │
-│   │  (PySpark)   │      │                              │               │    │
-│   └──────────────┘      │                              │  SigV4 Auth   │    │
-│          │              │                              │               │    │
-│          │ Write        │                              │               │    │
-│          ▼ Iceberg      │                              │               │    │
-│   ┌──────────────┐      │                     ┌────────┴───────┐       │    │
-│   │    Trino     │◀─────│─────────────────────│   REST API     │       │    │
-│   │   Cluster    │      │                     │  Connector     │       │    │
-│   │              │      │                     └────────────────┘       │    │
-│   └──────────────┘      │                                              │    │
-│          │              └──────────────────────────────────────────────┘    │
-│          │ SQL Query                                                         │
-│          ▼                                                                   │
-│   ┌──────────────┐      ┌──────────────┐                                    │
-│   │   Results    │      │    DuckDB    │──── Local Parquet Query            │
-│   │  Comparison  │◀─────│  (Optional)  │                                    │
-│   └──────────────┘      └──────────────┘                                    │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Local["Local Machine"]
+        Files["Local Parquet Files<br/>424 files, 4.2GB"]
+        Spark["Apache Spark<br/>(PySpark)"]
+        DuckDB["DuckDB<br/>(Optional)"]
+        Results["Results<br/>Comparison"]
+    end
+
+    subgraph MinIO["MinIO AIStor"]
+        subgraph Storage["Object Storage"]
+            Staging["Staging Bucket<br/>parquet/"]
+            Warehouse["Iceberg Warehouse<br/>trinotutorial"]
+        end
+        Catalog["Iceberg REST Catalog<br/>/_iceberg/v1/..."]
+    end
+
+    subgraph TrinoDocker["Docker Container"]
+        Trino["Trino<br/>(Single Node)"]
+    end
+
+    %% Data Flow
+    Files -->|"1. Upload (boto3)"| Staging
+    Staging -->|"2. Read (s3a://)"| Spark
+    Spark -->|"3. Write Iceberg"| Warehouse
+    Spark -.->|"Create table"| Catalog
+    
+    Catalog -->|"4. REST API<br/>SigV4 Auth"| Trino
+    Warehouse -->|"Read data"| Trino
+    
+    Trino -->|"5. SQL Query"| Results
+    
+    Files -->|"Direct read"| DuckDB
+    DuckDB -->|"Compare"| Results
+
+    %% Styling
+    style MinIO fill:#ff6b6b,color:#fff
+    style Catalog fill:#4ecdc4,color:#fff
+    style Trino fill:#45b7d1,color:#fff
+    style Spark fill:#f9ca24,color:#000
+    style DuckDB fill:#6c5ce7,color:#fff
+    style Results fill:#00b894,color:#fff
 ```
 
 ### Data Flow
@@ -193,39 +199,35 @@ docker compose -f docker-compose-trino-cluster.yaml up -d
 
 ### Network Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                      Docker Network: iceberg_tests                   │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  ┌─────────────────┐                     ┌─────────────────────┐    │
-│  │   Host Machine  │                     │   minio (container) │    │
-│  │                 │                     │                     │    │
-│  │  Python Script  │───localhost:9000───▶│  S3: 9000           │    │
-│  │  (run_trino_    │                     │  Console: 9001      │    │
-│  │   analysis.py)  │                     │                     │    │
-│  │                 │                     │  hostname: minio    │    │
-│  └─────────────────┘                     └─────────────────────┘    │
-│          │                                        ▲                  │
-│          │                                        │                  │
-│          │ localhost:9999                         │ minio:9000       │
-│          ▼                                        │ (internal)       │
-│  ┌─────────────────────────────────────────────────────────────┐    │
-│  │                    Trino Container                           │    │
-│  │                                                              │    │
-│  │  Trino connects to MinIO using Docker service name:          │    │
-│  │    iceberg.rest-catalog.uri = 'http://minio:9000/_iceberg'   │    │
-│  │    s3.endpoint = 'http://minio:9000'                         │    │
-│  │                                                              │    │
-│  │  NOT localhost:9000 (that would be the Trino container!)     │    │
-│  └──────────────────────────────────────────────────────────────┘    │
-│                                                                      │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph Host["Host Machine"]
+        Script["Python Script<br/>run_trino_analysis.py"]
+    end
 
-CRITICAL: The script uses TWO different MinIO hostnames:
-  - MINIO_HOST = "http://localhost:9000"      (for Python/Spark on host)
-  - MINIO_HOST_FOR_TRINO = "http://minio:9000" (for Trino in Docker)
+    subgraph Docker["Docker Network: iceberg_tests"]
+        subgraph MinIOContainer["minio container"]
+            MinIO["MinIO AIStor<br/>S3: 9000<br/>Console: 9001"]
+        end
+        
+        subgraph TrinoContainer["trino container"]
+            Trino["Trino Server<br/>Port: 8080"]
+            Note["Uses: minio:9000<br/>NOT localhost:9000"]
+        end
+    end
+
+    Script -->|"localhost:9000<br/>(S3 API)"| MinIO
+    Script -->|"localhost:9999<br/>(Trino API)"| Trino
+    Trino -->|"minio:9000<br/>(internal Docker DNS)"| MinIO
+
+    style MinIO fill:#ff6b6b,color:#fff
+    style Trino fill:#45b7d1,color:#fff
+    style Script fill:#f9ca24,color:#000
 ```
+
+> **CRITICAL**: The script uses TWO different MinIO hostnames:
+> - `MINIO_HOST = "http://localhost:9000"` — for Python/Spark on host
+> - `MINIO_HOST_FOR_TRINO = "http://minio:9000"` — for Trino in Docker
 
 ---
 
@@ -396,55 +398,77 @@ discovery.uri=http://trino-coordinator:8080
 
 ### Step-by-Step Process
 
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│                        Test Execution Flow                              │
-├────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  1. INITIALIZATION                                                      │
-│     ├── Load configuration from environment variables                   │
-│     ├── Validate PARQUET_DIR exists                                     │
-│     └── Find Parquet files (424 files, 4.2GB)                          │
-│                                                                         │
-│  2. UPLOAD TO MINIO                                                     │
-│     ├── Create staging bucket (trinotutorial-staging)                  │
-│     ├── Upload Parquet files to s3://staging-bucket/parquet/           │
-│     └── Return S3 path prefix                                          │
-│                                                                         │
-│  3. WAREHOUSE SETUP                                                     │
-│     ├── Create bucket if not exists                                    │
-│     ├── Check warehouse via Iceberg REST API                           │
-│     └── Create warehouse with upgrade-existing=true                    │
-│                                                                         │
-│  4. SPARK DATA INGESTION                                                │
-│     ├── Create Spark session with AIStor catalog                       │
-│     ├── Create namespace: taxi_analysis                                │
-│     ├── Read Parquet from s3a://staging-bucket/parquet/                │
-│     ├── Write to Iceberg: tutorial_catalog.taxi_analysis.taxi_trips    │
-│     └── Verify row count                                               │
-│                                                                         │
-│  5. TRINO CATALOG SETUP                                                 │
-│     ├── Connect to Trino                                               │
-│     ├── DROP CATALOG IF EXISTS (ensure fresh config)                   │
-│     ├── CREATE CATALOG with AIStor properties                          │
-│     └── Verify schema and table visibility                             │
-│                                                                         │
-│  6. QUERY EXECUTION                                                     │
-│     ├── Run analysis query on Iceberg table                            │
-│     ├── Measure execution time                                         │
-│     └── Collect results                                                │
-│                                                                         │
-│  7. COMPARISON (Optional)                                               │
-│     ├── Run same query via DuckDB on local Parquet                     │
-│     ├── Compare execution times                                        │
-│     └── Verify result consistency                                      │
-│                                                                         │
-│  8. RESULTS                                                             │
-│     ├── Print formatted results table                                  │
-│     ├── Display performance metrics                                    │
-│     └── Show comparison summary                                        │
-│                                                                         │
-└────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph Phase1["1. INITIALIZATION"]
+        I1[Load environment variables]
+        I2[Validate PARQUET_DIR exists]
+        I3[Find Parquet files<br/>424 files, 4.2GB]
+        I1 --> I2 --> I3
+    end
+
+    subgraph Phase2["2. UPLOAD TO MINIO"]
+        U1[Create staging bucket]
+        U2[Upload Parquet files]
+        U3[Return S3 path prefix]
+        U1 --> U2 --> U3
+    end
+
+    subgraph Phase3["3. WAREHOUSE SETUP"]
+        W1[Create bucket if needed]
+        W2[Check warehouse via REST API]
+        W3[Create warehouse<br/>upgrade-existing=true]
+        W1 --> W2 --> W3
+    end
+
+    subgraph Phase4["4. SPARK DATA INGESTION"]
+        S1[Create Spark session]
+        S2[Create namespace: taxi_analysis]
+        S3[Read Parquet from s3a://]
+        S4[Write to Iceberg table]
+        S5[Verify row count]
+        S1 --> S2 --> S3 --> S4 --> S5
+    end
+
+    subgraph Phase5["5. TRINO CATALOG SETUP"]
+        T1[Connect to Trino]
+        T2[DROP CATALOG IF EXISTS]
+        T3[CREATE CATALOG]
+        T4[Verify schema visibility]
+        T1 --> T2 --> T3 --> T4
+    end
+
+    subgraph Phase6["6. QUERY EXECUTION"]
+        Q1[Run analysis query]
+        Q2[Measure execution time]
+        Q3[Collect results]
+        Q1 --> Q2 --> Q3
+    end
+
+    subgraph Phase7["7. COMPARISON (Optional)"]
+        C1[Run DuckDB query]
+        C2[Compare times]
+        C3[Verify consistency]
+        C1 --> C2 --> C3
+    end
+
+    subgraph Phase8["8. RESULTS"]
+        R1[Print results table]
+        R2[Display metrics]
+        R3[Show summary]
+        R1 --> R2 --> R3
+    end
+
+    Phase1 --> Phase2 --> Phase3 --> Phase4 --> Phase5 --> Phase6 --> Phase7 --> Phase8
+
+    style Phase1 fill:#3498db,color:#fff
+    style Phase2 fill:#e74c3c,color:#fff
+    style Phase3 fill:#9b59b6,color:#fff
+    style Phase4 fill:#f39c12,color:#fff
+    style Phase5 fill:#1abc9c,color:#fff
+    style Phase6 fill:#2ecc71,color:#fff
+    style Phase7 fill:#95a5a6,color:#fff
+    style Phase8 fill:#27ae60,color:#fff
 ```
 
 ### Analysis Query
