@@ -32,7 +32,33 @@ Data lakehouse analytics projects demonstrating MinIO AIStor Tables (native Iceb
 
 ## Quick Start
 
-### 1. Get Test Data
+### Unified Test Runner (Recommended)
+
+Run all tests with a single command:
+
+```bash
+# Run on host machine (requires Docker)
+./run-all-tests.sh --mode host --rows 5
+
+# Run in isolated Lima VM (requires limactl)
+./run-all-tests.sh --mode vm --rows 5
+
+# Options:
+#   --mode host|vm    Execution mode (required)
+#   --rows N          Millions of rows to generate (default: 5)
+#   --no-cleanup      Keep data after tests complete
+```
+
+The unified test runner will:
+1. Generate synthetic taxi data
+2. Run DuckDB format analysis (Avro vs Parquet)
+3. Run AIStor Tables analysis (Spark ingestion + Trino queries)
+4. Display performance comparison summary
+5. Clean up all data and containers
+
+### Manual Execution
+
+#### 1. Get Test Data
 
 ```bash
 cd taxi_data
@@ -45,7 +71,7 @@ pip install -r requirements.txt
 ./scripts/download_from_bq.py --project my-gcp-project --years 5
 ```
 
-### 2. Run DuckDB Format Analysis
+#### 2. Run DuckDB Format Analysis
 
 ```bash
 cd duckdb-format-analysis
@@ -53,7 +79,7 @@ pip install -r requirements.txt
 ./scripts/run_analysis.sh
 ```
 
-### 3. Run AIStor Tables Analysis
+#### 3. Run AIStor Tables Analysis
 
 ```bash
 cd aistor-tables-analysis
@@ -81,15 +107,17 @@ cp docker/.env.example docker/.env
 
 ## Prerequisites
 
-- Python 3.11+
+- Python 3.8+ (3.11+ recommended)
 - Docker and Docker Compose (for AIStor analysis)
 - MinIO AIStor license (for AIStor analysis)
+- Lima (`brew install lima`) - optional, for VM mode testing
 
 ## Repository Structure
 
 ```
 aistor_and_lakehouse/
 ├── README.md                    # This file
+├── run-all-tests.sh             # Unified test runner (host or VM mode)
 ├── taxi_data/                   # Shared test data
 │   ├── scripts/
 │   │   ├── generate_synthetic.py
@@ -101,9 +129,12 @@ aistor_and_lakehouse/
 │   ├── analysis/
 │   ├── docker/
 │   └── scripts/
-└── duckdb-format-analysis/      # DuckDB format comparison
-    ├── analysis/
-    └── scripts/
+├── duckdb-format-analysis/      # DuckDB format comparison
+│   ├── analysis/
+│   └── scripts/
+└── test/                        # Lima VM test configuration
+    ├── test-vm.yaml
+    └── run-tests.sh
 ```
 
 ## License

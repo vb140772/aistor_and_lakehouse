@@ -35,6 +35,8 @@ from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 from trino.dbapi import connect
 logger.info("Imported trino")
+from tabulate import tabulate
+logger.info("Imported tabulate")
 
 # Import sigv4 module for REST API authentication
 # Try local module first, then fall back to container path
@@ -623,27 +625,36 @@ def run_trino_query(iceberg_cur, table_name: str) -> Tuple[List, float]:
 
 
 def print_results(results: List, column_names: List[str], format_name: str, execution_time: float):
-    """Print query results in a formatted table."""
-    print(f"\n{'='*60}")
+    """Print query results in a formatted table using tabulate."""
+    print(f"\n{'='*90}")
     print(f"{format_name} Results (Execution time: {execution_time:.3f} seconds)")
-    print(f"{'='*60}")
+    print(f"{'='*90}")
     
     if not results:
         print("No results returned")
         return
     
-    # Print header
-    header = " | ".join([f"{col:>15}" for col in column_names])
-    print(header)
-    print("-" * len(header))
-    
-    # Print rows (limit to top 20 for readability)
+    # Format data for display (limit to top 20 rows)
+    formatted_data = []
     for row in results[:20]:
-        row_str = " | ".join([f"{str(val):>15}" for val in row])
-        print(row_str)
+        formatted_row = [
+            str(row[0]),                    # company
+            f"{int(row[1]):,}",             # trip_count with thousands separator
+            f"${float(row[2]):,.2f}",       # total_fare as currency
+            f"${float(row[3]):.2f}"         # avg_fare as currency
+        ]
+        formatted_data.append(formatted_row)
+    
+    # Print table using tabulate
+    print(tabulate(
+        formatted_data,
+        headers=column_names,
+        tablefmt="simple",
+        colalign=("left", "right", "right", "right")
+    ))
     
     if len(results) > 20:
-        print(f"... and {len(results) - 20} more rows")
+        print(f"\n... and {len(results) - 20} more rows")
     
     print(f"\nTotal rows: {len(results)}")
 
