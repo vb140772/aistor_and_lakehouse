@@ -45,7 +45,13 @@ This project demonstrates end-to-end integration of **MinIO AIStor Tables** (nat
    ./scripts/start_services.sh
    ```
 
-4. **Download test data** (if needed):
+4. **Generate test data** (recommended):
+   ```bash
+   ./scripts/generate_synthetic_data.py           # 1M rows (default)
+   ./scripts/generate_synthetic_data.py --rows 5  # 5M rows
+   ```
+
+   Or download real Chicago taxi data from GCS (requires GCP access):
    ```bash
    ./scripts/download_from_gcs_rsync.sh
    ```
@@ -114,7 +120,8 @@ aistor-tables-analysis/
 │   ├── start_services.sh        # Start Docker services
 │   ├── stop_services.sh         # Stop Docker services
 │   ├── run_trino_analysis.sh    # Run analysis
-│   └── download_from_gcs_rsync.sh
+│   ├── generate_synthetic_data.py  # Generate test data
+│   └── download_from_gcs_rsync.sh  # Download from GCS (optional)
 ├── data/                        # Local Parquet files (gitignored)
 ├── requirements.txt
 └── README.md
