@@ -8,7 +8,7 @@ Data lakehouse analytics projects demonstrating MinIO AIStor Tables (native Iceb
 |---------|-------------|--------------|
 | [aistor-tables-analysis](./aistor-tables-analysis/README.md) | MinIO AIStor Tables integration with Spark and Trino | Trino + Spark |
 | [duckdb-format-analysis](./duckdb-format-analysis/README.md) | Avro vs Parquet format performance comparison | DuckDB |
-| [taxi_data](./taxi_data/README.md) | Shared test data (synthetic generator + GCS download) | - |
+| [taxi_data](./taxi_data/README.md) | Shared test data (synthetic generator + BigQuery export) | - |
 
 ## Architecture Overview
 
@@ -32,12 +32,17 @@ Data lakehouse analytics projects demonstrating MinIO AIStor Tables (native Iceb
 
 ## Quick Start
 
-### 1. Generate Test Data
+### 1. Get Test Data
 
 ```bash
 cd taxi_data
 pip install -r requirements.txt
+
+# Option A: Generate synthetic data (fast, no GCP required)
 ./scripts/generate_synthetic.py --rows 10  # 10M rows
+
+# Option B: Export real data from BigQuery (requires GCP project)
+./scripts/download_from_bq.py --project my-gcp-project --years 5
 ```
 
 ### 2. Run DuckDB Format Analysis
@@ -88,6 +93,7 @@ aistor_and_lakehouse/
 ├── taxi_data/                   # Shared test data
 │   ├── scripts/
 │   │   ├── generate_synthetic.py
+│   │   ├── download_from_bq.py
 │   │   └── download_from_gcs.sh
 │   ├── parquet/
 │   └── avro/

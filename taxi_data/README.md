@@ -15,7 +15,7 @@ This folder contains test data used by:
 
 ## Prerequisites
 
-Install Python dependencies for data generation:
+Install Python dependencies:
 
 ```bash
 cd taxi_data
@@ -23,8 +23,9 @@ pip install -r requirements.txt
 ```
 
 **Dependencies:**
-- `numpy`, `pyarrow` - Required for Parquet generation
-- `fastavro`, `cramjam` - Required for Avro generation (optional)
+- `numpy`, `pyarrow` - Required for synthetic Parquet generation
+- `fastavro`, `cramjam` - Required for synthetic Avro generation (optional)
+- `google-cloud-bigquery`, `google-cloud-storage` - Required for BigQuery export (optional)
 
 ## Getting Data
 
@@ -53,9 +54,45 @@ cd taxi_data
 - `--format` / `-f`: Output format: `parquet`, `avro`, or `both` (default: both)
 - `--output-dir` / `-o`: Output directory (default: current directory)
 
-### Option 2: Download Real Data from GCS
+### Option 2: Export Real Data from BigQuery (Recommended for real data)
 
-Download actual Chicago taxi trip data from Google Cloud Storage. Requires GCP access.
+Export actual Chicago taxi trip data from BigQuery public dataset. Fully autonomous - creates
+dataset, exports to GCS, and downloads locally.
+
+```bash
+cd taxi_data
+
+# Export last 5 years of data (default)
+./scripts/download_from_bq.py --project my-gcp-project
+
+# Export last 3 years
+./scripts/download_from_bq.py --project my-gcp-project --years 3
+
+# Use specific bucket name
+./scripts/download_from_bq.py --project my-gcp-project --bucket my-bucket-name
+```
+
+**Options:**
+- `--project` / `-p`: GCP project ID (required)
+- `--years` / `-y`: Number of years of data (default: 5)
+- `--bucket` / `-b`: GCS bucket name (default: auto-generated)
+- `--region` / `-r`: GCS/BQ region (default: us-central1)
+
+**Requirements:**
+- GCP project with BigQuery and Cloud Storage APIs enabled
+- Authenticated with `gcloud auth application-default login`
+
+**What it does:**
+1. Creates a temporary BigQuery dataset in your project
+2. Queries public Chicago taxi data and creates a subset table
+3. Creates a GCS bucket (if needed)
+4. Exports data to Parquet and Avro formats
+5. Downloads files to local `parquet/` and `avro/` directories
+6. Cleans up temporary BigQuery dataset (bucket is retained)
+
+### Option 3: Download from Existing GCS Bucket
+
+Download from an existing GCS bucket that already has exported data.
 
 ```bash
 cd taxi_data
@@ -103,6 +140,7 @@ taxi_data/
 ├── requirements.txt    # Python dependencies
 ├── scripts/
 │   ├── generate_synthetic.py   # Synthetic data generator
+│   ├── download_from_bq.py     # BigQuery export pipeline
 │   └── download_from_gcs.sh    # GCS download script
 ├── parquet/            # Parquet format files
 │   └── *.parquet

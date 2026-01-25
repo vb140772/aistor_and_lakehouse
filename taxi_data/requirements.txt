@@ -1,11 +1,15 @@
-# Taxi Data Generator Dependencies
+# Taxi Data Dependencies
 #
 # Install with: pip install -r requirements.txt
 
-# Required for Parquet generation
+# Required for synthetic Parquet generation
 numpy>=1.24.0
 pyarrow>=14.0.0
 
-# Optional: Required for Avro generation
+# Optional: Required for synthetic Avro generation
 fastavro>=1.9.0
 cramjam>=2.7.0  # Snappy compression for fastavro
+
+# Optional: Required for BigQuery export (download_from_bq.py)
+google-cloud-bigquery>=3.0.0
+google-cloud-storage>=2.0.0
