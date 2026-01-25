@@ -8,6 +8,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DOCKER_DIR="${PROJECT_ROOT}/docker"
 
+# Detect docker compose command (v2 vs v1)
+if docker compose version >/dev/null 2>&1; then
+    DOCKER_COMPOSE="docker compose"
+else
+    DOCKER_COMPOSE="docker-compose"
+fi
+
 echo "========================================="
 echo "Starting MinIO AIStor + Trino + Spark Services"
 echo "========================================="
@@ -34,7 +41,7 @@ fi
 cd "${DOCKER_DIR}"
 
 echo "Starting services..."
-docker compose up -d
+$DOCKER_COMPOSE up -d
 
 echo ""
 echo "Waiting for services to be healthy..."

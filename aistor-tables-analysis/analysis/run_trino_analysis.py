@@ -223,9 +223,15 @@ def run_spark_in_container(staging_bucket: str, schema: str, table: str) -> bool
         "org.apache.hadoop:hadoop-aws:3.3.4"
     )
     
+    # Check if we should use sudo for docker commands
+    use_sudo = os.getenv("USE_SUDO", "0") == "1"
+    
     # Build docker exec command
-    cmd = [
-        "docker", "exec", "docker-spark-1",
+    cmd = []
+    if use_sudo:
+        cmd.append("sudo")
+    cmd.extend([
+        "docker", "exec", "docker_spark_1",
         "/opt/spark/bin/spark-submit",
         "--packages", spark_packages,
         "/app/analysis/spark_ingest.py",
@@ -236,48 +242,83 @@ def run_spark_in_container(staging_bucket: str, schema: str, table: str) -> bool
         "--secret-key", MINIO_SECRET_KEY,
         "--schema", schema,
         "--table", table
-    ]
+    ])
     
-    print(f"Executing: docker exec docker-spark-1 spark-submit ...")
-    print("This may take a while for large datasets...")
+    sudo_prefix = "sudo " if use_sudo else ""
     
-    try:
-        # Run spark-submit in container
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=600  # 10 minute timeout
-        )
+    # Try both container naming conventions:
+    # - docker-compose v1 uses underscores: docker_spark_1
+    # - docker-compose v2 uses hyphens: docker-spark-1
+    container_names = ["docker_spark_1", "docker-spark-1"]
+    
+    for container_name in container_names:
+        # Update command with this container name
+        cmd_with_container = []
+        if use_sudo:
+            cmd_with_container.append("sudo")
+        cmd_with_container.extend([
+            "docker", "exec", container_name,
+            "/opt/spark/bin/spark-submit",
+            "--packages", spark_packages,
+            "/app/analysis/spark_ingest.py",
+            "--warehouse", WAREHOUSE,
+            "--staging-bucket", staging_bucket,
+            "--minio-host", "http://minio:9000",
+            "--access-key", MINIO_ACCESS_KEY,
+            "--secret-key", MINIO_SECRET_KEY,
+            "--schema", schema,
+            "--table", table
+        ])
         
-        # Print output
-        if result.stdout:
-            # Filter to show key lines
-            for line in result.stdout.split('\n'):
-                if any(x in line for x in ['Read', 'rows', 'Table', 'Error', 'loaded', 'created', '=']):
-                    print(line)
+        print(f"Trying: {sudo_prefix}docker exec {container_name} spark-submit ...")
+        print("This may take a while for large datasets...")
         
-        if result.returncode != 0:
-            print(f"✗ Spark ingestion failed (exit code {result.returncode})")
-            if result.stderr:
-                # Show last 20 lines of stderr
-                stderr_lines = result.stderr.strip().split('\n')
-                for line in stderr_lines[-20:]:
-                    print(f"  {line}")
+        try:
+            # Run spark-submit in container
+            result = subprocess.run(
+                cmd_with_container,
+                capture_output=True,
+                text=True,
+                timeout=600  # 10 minute timeout
+            )
+            
+            # Check if container was not found
+            if result.returncode != 0 and "No such container" in result.stderr:
+                print(f"  Container '{container_name}' not found, trying next...")
+                continue
+            
+            # Print output
+            if result.stdout:
+                # Filter to show key lines
+                for line in result.stdout.split('\n'):
+                    if any(x in line for x in ['Read', 'rows', 'Table', 'Error', 'loaded', 'created', '=']):
+                        print(line)
+            
+            if result.returncode != 0:
+                print(f"✗ Spark ingestion failed (exit code {result.returncode})")
+                if result.stderr:
+                    # Show last 20 lines of stderr
+                    stderr_lines = result.stderr.strip().split('\n')
+                    for line in stderr_lines[-20:]:
+                        print(f"  {line}")
+                return False
+            
+            print("✓ Spark ingestion completed successfully")
+            return True
+            
+        except subprocess.TimeoutExpired:
+            print("✗ Spark ingestion timed out (>10 minutes)")
             return False
-        
-        print("✓ Spark ingestion completed successfully")
-        return True
-        
-    except subprocess.TimeoutExpired:
-        print("✗ Spark ingestion timed out (>10 minutes)")
-        return False
-    except FileNotFoundError:
-        print("✗ Docker not found. Make sure Docker is running.")
-        return False
-    except Exception as e:
-        print(f"✗ Failed to run Spark in container: {e}")
-        return False
+        except FileNotFoundError:
+            print("✗ Docker not found. Make sure Docker is running.")
+            return False
+        except Exception as e:
+            print(f"✗ Failed to run Spark in container: {e}")
+            return False
+    
+    # If we get here, no container was found
+    print("✗ No Spark container found (tried: docker_spark_1, docker-spark-1)")
+    return False
 
 
 def create_iceberg_catalog(cur) -> bool:

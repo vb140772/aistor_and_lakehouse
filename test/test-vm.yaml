@@ -1,0 +1,72 @@
+# Lima VM for testing aistor_and_lakehouse project
+# Usage:
+#   limactl create --name aistor-test test-vm.yaml
+#   limactl start aistor-test
+#   limactl shell aistor-test
+
+vmType: "vz"
+
+images:
+  - location: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-arm64.img"
+    arch: "aarch64"
+  - location: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
+    arch: "x86_64"
+
+cpus: 4
+memory: "16GiB"
+disk: "50GiB"
+
+networks:
+  - vzNAT: true
+
+mounts:
+  - location: "~"
+    writable: true
+
+containerd:
+  system: false
+  user: true
+
+portForwards:
+  - guestPort: 9000
+    hostPort: 9000
+    proto: tcp
+  - guestPort: 9001
+    hostPort: 9001
+    proto: tcp
+  - guestPort: 9999
+    hostPort: 9999
+    proto: tcp
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+
+      # Update packages
+      apt-get update
+
+      # Install Python 3.11 and pip
+      apt-get install -y software-properties-common
+      add-apt-repository -y ppa:deadsnakes/ppa
+      apt-get update
+      apt-get install -y python3.11 python3.11-venv python3.11-dev python3-pip
+
+      # Install Docker
+      apt-get install -y docker.io docker-compose
+
+      # Add user to docker group
+      usermod -aG docker ${LIMA_CIDATA_USER}
+
+      # Enable and start Docker
+      systemctl enable docker
+      systemctl start docker
+
+      # Install git
+      apt-get install -y git
+
+      echo "Provisioning complete!"
+
+ssh:
+  loadDotSSHPubKeys: true
