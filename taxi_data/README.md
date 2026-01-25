@@ -76,7 +76,7 @@ cd taxi_data
 - `--project` / `-p`: GCP project ID (required)
 - `--years` / `-y`: Number of years of data (default: 5)
 - `--bucket` / `-b`: GCS bucket name (default: auto-generated)
-- `--region` / `-r`: GCS/BQ region (default: us-central1)
+- `--region` / `-r`: GCS/BQ region (default: US)
 
 **Requirements:**
 - GCP project with BigQuery and Cloud Storage APIs enabled

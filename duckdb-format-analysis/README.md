@@ -36,17 +36,14 @@ This project compares the performance and efficiency of **Avro** and **Parquet**
 2. **Get test data** (from shared `taxi_data/` folder):
    ```bash
    cd ../taxi_data
-
-   # Install data generation dependencies
    pip install -r requirements.txt
 
-   # Generate synthetic data (recommended, no external dependencies)
+   # Option A: Generate synthetic data (fast, no GCP required)
    ./scripts/generate_synthetic.py              # 1M rows (default)
-   ./scripts/generate_synthetic.py --rows 5     # 5M rows
    ./scripts/generate_synthetic.py --format both  # Both Parquet and Avro
 
-   # Or download real data from GCS (requires GCP access)
-   ./scripts/download_from_gcs.sh
+   # Option B: Export real data from BigQuery (requires GCP project)
+   ./scripts/download_from_bq.py --project my-gcp-project --years 1
    ```
 
    See [taxi_data/README.md](../taxi_data/README.md) for more options.
