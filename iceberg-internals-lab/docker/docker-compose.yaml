@@ -1,0 +1,51 @@
+# MinIO AIStor + Trino Docker Compose
+# Iceberg Internals Lab - Demonstrates table operations and metadata changes
+# Usage: docker compose up -d
+
+services:
+  minio:
+    image: ${MINIO_TEST_IMAGE:-quay.io/minio/aistor/minio:EDGE}
+    hostname: minio
+    command: server --console-address ":9001" /data
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Console
+    environment:
+      MINIO_LICENSE: ${MINIO_LICENSE}
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    volumes:
+      - minio_data:/data
+    networks:
+      - lakehouse
+
+  trino:
+    image: ${TRINO_IMAGE:-trinodb/trino:477}
+    hostname: trino
+    environment:
+      - CATALOG_MANAGEMENT=dynamic
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-I", "http://localhost:8080/v1/status"]
+      interval: 2s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    ports:
+      - "9999:8080"   # Trino REST API
+    networks:
+      - lakehouse
+
+networks:
+  lakehouse:
+
+volumes:
+  minio_data:

@@ -1,0 +1,18 @@
+# Iceberg Internals Lab Dependencies
+
+# Trino client
+trino>=0.330.0
+
+# AWS SDK for S3/MinIO access
+boto3>=1.28.0
+
+# HTTP requests for REST API
+requests>=2.28.0
+
+# Table formatting
+tabulate>=0.9.0
+
+# Rich console output
+rich>=13.0.0
+
+# JSON handling
