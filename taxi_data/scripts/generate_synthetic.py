@@ -2,17 +2,16 @@
 """
 Synthetic Taxi Trip Data Generator
 
-Generates realistic Chicago taxi trip data for testing AIStor Tables integration.
+Generates realistic Chicago taxi trip data for testing.
 Eliminates the need for GCP/BigQuery data download.
 
 Usage:
-    ./scripts/generate_synthetic_data.py              # 1M rows (default)
-    ./scripts/generate_synthetic_data.py --rows 5     # 5M rows
-    ./scripts/generate_synthetic_data.py --rows 100   # 100M rows (max)
+    ./scripts/generate_synthetic.py              # 1M rows, both formats
+    ./scripts/generate_synthetic.py --rows 5     # 5M rows
+    ./scripts/generate_synthetic.py --format parquet  # Parquet only
 """
 
 import argparse
-import os
 import sys
 import uuid
 from datetime import datetime, timedelta
@@ -21,6 +20,13 @@ from pathlib import Path
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+# Try to import fastavro for Avro support
+try:
+    import fastavro
+    AVRO_AVAILABLE = True
+except ImportError:
+    AVRO_AVAILABLE = False
 
 
 # Taxi company names with relative market share weights
@@ -74,6 +80,37 @@ PAYMENT_WEIGHTS = [0.55, 0.35, 0.05, 0.03, 0.01, 0.01]
 CHICAGO_LAT_MIN, CHICAGO_LAT_MAX = 41.65, 42.02
 CHICAGO_LON_MIN, CHICAGO_LON_MAX = -87.94, -87.52
 
+# Avro schema for taxi trips
+AVRO_SCHEMA = {
+    "type": "record",
+    "name": "TaxiTrip",
+    "fields": [
+        {"name": "unique_key", "type": ["null", "string"]},
+        {"name": "taxi_id", "type": ["null", "string"]},
+        {"name": "trip_start_timestamp", "type": ["null", {"type": "long", "logicalType": "timestamp-micros"}]},
+        {"name": "trip_end_timestamp", "type": ["null", {"type": "long", "logicalType": "timestamp-micros"}]},
+        {"name": "trip_seconds", "type": ["null", "long"]},
+        {"name": "trip_miles", "type": ["null", "double"]},
+        {"name": "pickup_census_tract", "type": ["null", "long"]},
+        {"name": "dropoff_census_tract", "type": ["null", "long"]},
+        {"name": "pickup_community_area", "type": ["null", "long"]},
+        {"name": "dropoff_community_area", "type": ["null", "long"]},
+        {"name": "fare", "type": ["null", "double"]},
+        {"name": "tips", "type": ["null", "double"]},
+        {"name": "tolls", "type": ["null", "double"]},
+        {"name": "extras", "type": ["null", "double"]},
+        {"name": "trip_total", "type": ["null", "double"]},
+        {"name": "payment_type", "type": ["null", "string"]},
+        {"name": "company", "type": ["null", "string"]},
+        {"name": "pickup_latitude", "type": ["null", "double"]},
+        {"name": "pickup_longitude", "type": ["null", "double"]},
+        {"name": "pickup_location", "type": ["null", "string"]},
+        {"name": "dropoff_latitude", "type": ["null", "double"]},
+        {"name": "dropoff_longitude", "type": ["null", "double"]},
+        {"name": "dropoff_location", "type": ["null", "string"]},
+    ]
+}
+
 
 def parse_args():
     """Parse command line arguments."""
@@ -82,10 +119,11 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s                    # Generate 1M rows (default)
-  %(prog)s --rows 5           # Generate 5M rows
-  %(prog)s --rows 100         # Generate 100M rows (maximum)
-  %(prog)s --rows 1 --files 5 # Generate 1M rows across 5 files
+  %(prog)s                        # Generate 1M rows in both formats
+  %(prog)s --rows 5               # Generate 5M rows
+  %(prog)s --format parquet       # Parquet only
+  %(prog)s --format avro          # Avro only
+  %(prog)s --rows 1 --files 5     # 1M rows across 5 files
         """,
     )
     parser.add_argument(
@@ -98,10 +136,17 @@ Examples:
         "-o", "--output-dir",
         type=str,
         default=None,
-        help="Output directory (default: data/parquet)",
+        help="Output directory (default: taxi_data root)",
     )
     parser.add_argument(
-        "-f", "--files",
+        "-f", "--format",
+        type=str,
+        choices=["parquet", "avro", "both"],
+        default="both",
+        help="Output format (default: both)",
+    )
+    parser.add_argument(
+        "--files",
         type=int,
         default=None,
         help="Number of output files (default: auto-calculated, ~100K rows per file)",
@@ -206,10 +251,10 @@ def generate_batch(batch_size: int, rng: np.random.Generator, start_date: dateti
         "company": companies.tolist(),
         "pickup_latitude": np.round(pickup_lat, 6).tolist(),
         "pickup_longitude": np.round(pickup_lon, 6).tolist(),
-        "pickup_location": [None] * batch_size,  # Not used
+        "pickup_location": [None] * batch_size,
         "dropoff_latitude": np.round(dropoff_lat, 6).tolist(),
         "dropoff_longitude": np.round(dropoff_lon, 6).tolist(),
-        "dropoff_location": [None] * batch_size,  # Not used
+        "dropoff_location": [None] * batch_size,
     }
 
 
@@ -243,6 +288,33 @@ def dict_to_table(data: dict) -> pa.Table:
     return pa.Table.from_pydict(data, schema=schema)
 
 
+def dict_to_avro_records(data: dict) -> list:
+    """Convert dictionary to list of Avro records."""
+    records = []
+    num_rows = len(data["unique_key"])
+    
+    for i in range(num_rows):
+        record = {}
+        for key in data:
+            value = data[key][i]
+            # Convert datetime to microseconds timestamp for Avro
+            if isinstance(value, datetime):
+                value = int(value.timestamp() * 1_000_000)
+            record[key] = value
+        records.append(record)
+    
+    return records
+
+
+def clear_directory(directory: Path, extension: str):
+    """Remove existing files with given extension."""
+    existing_files = list(directory.glob(f"*{extension}"))
+    if existing_files:
+        print(f"Removing {len(existing_files)} existing {extension} file(s)...")
+        for f in existing_files:
+            f.unlink()
+
+
 def main():
     """Main entry point."""
     args = parse_args()
@@ -255,18 +327,35 @@ def main():
         print("Error: --rows cannot exceed 100 (million)")
         return 1
     
+    # Check Avro availability
+    generate_avro = args.format in ("avro", "both")
+    generate_parquet = args.format in ("parquet", "both")
+    
+    if generate_avro and not AVRO_AVAILABLE:
+        print("Warning: fastavro not installed. Install with: pip install fastavro")
+        print("Generating Parquet only.")
+        generate_avro = False
+        generate_parquet = True
+    
     total_rows = args.rows * 1_000_000
     
-    # Determine output directory
+    # Determine output directory (taxi_data root)
     script_dir = Path(__file__).parent
-    project_root = script_dir.parent
-    if args.output_dir:
-        output_dir = Path(args.output_dir)
-    else:
-        output_dir = project_root / "data" / "parquet"
+    taxi_data_dir = script_dir.parent
     
-    # Create output directory
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if args.output_dir:
+        base_dir = Path(args.output_dir)
+    else:
+        base_dir = taxi_data_dir
+    
+    parquet_dir = base_dir / "parquet"
+    avro_dir = base_dir / "avro"
+    
+    # Create output directories
+    if generate_parquet:
+        parquet_dir.mkdir(parents=True, exist_ok=True)
+    if generate_avro:
+        avro_dir.mkdir(parents=True, exist_ok=True)
     
     # Calculate number of files (target ~100K rows per file)
     rows_per_file = 100_000
@@ -286,7 +375,11 @@ def main():
     print(f"Total rows: {total_rows:,}")
     print(f"Output files: {num_files}")
     print(f"Rows per file: ~{rows_per_file:,}")
-    print(f"Output directory: {output_dir}")
+    print(f"Formats: {args.format}")
+    if generate_parquet:
+        print(f"Parquet: {parquet_dir}")
+    if generate_avro:
+        print(f"Avro: {avro_dir}")
     print(f"Random seed: {args.seed}")
     print("=" * 60)
     print()
@@ -298,56 +391,74 @@ def main():
     start_date = datetime(2019, 1, 1)
     end_date = datetime(2023, 12, 31)
     
-    # Clear existing parquet files
-    existing_files = list(output_dir.glob("*.parquet"))
-    if existing_files:
-        print(f"Removing {len(existing_files)} existing Parquet file(s)...")
-        for f in existing_files:
-            f.unlink()
-        print()
+    # Clear existing files
+    if generate_parquet:
+        clear_directory(parquet_dir, ".parquet")
+    if generate_avro:
+        clear_directory(avro_dir, ".avro")
+    print()
     
     # Generate data in batches
-    batch_size = min(100_000, rows_per_file)  # Process 100K rows at a time
+    batch_size = min(100_000, rows_per_file)
     
     total_generated = 0
     for file_idx in range(num_files):
         file_rows = rows_per_file
         if file_idx == num_files - 1:
-            file_rows += remainder  # Add remainder to last file
-        
-        file_name = f"taxi_trips_synthetic_{file_idx:012d}.parquet"
-        file_path = output_dir / file_name
+            file_rows += remainder
         
         # Generate data for this file
         all_data = None
+        all_records = []
         rows_in_file = 0
         
         while rows_in_file < file_rows:
             batch = min(batch_size, file_rows - rows_in_file)
             data = generate_batch(batch, rng, start_date, end_date)
-            table = dict_to_table(data)
             
-            if all_data is None:
-                all_data = table
-            else:
-                all_data = pa.concat_tables([all_data, table])
+            if generate_parquet:
+                table = dict_to_table(data)
+                if all_data is None:
+                    all_data = table
+                else:
+                    all_data = pa.concat_tables([all_data, table])
+            
+            if generate_avro:
+                all_records.extend(dict_to_avro_records(data))
             
             rows_in_file += batch
         
-        # Write to parquet
-        pq.write_table(all_data, file_path, compression="snappy")
+        # Write Parquet
+        if generate_parquet:
+            parquet_file = parquet_dir / f"taxi_trips_synthetic_{file_idx:012d}.parquet"
+            pq.write_table(all_data, parquet_file, compression="snappy")
+        
+        # Write Avro
+        if generate_avro:
+            avro_file = avro_dir / f"taxi_trips_synthetic_{file_idx:012d}.avro"
+            with open(avro_file, "wb") as f:
+                fastavro.writer(f, AVRO_SCHEMA, all_records, codec="snappy")
+        
         total_generated += rows_in_file
         
         # Progress
         pct = (file_idx + 1) / num_files * 100
-        print(f"[{pct:5.1f}%] Generated {file_name} ({rows_in_file:,} rows)")
+        formats = []
+        if generate_parquet:
+            formats.append("parquet")
+        if generate_avro:
+            formats.append("avro")
+        print(f"[{pct:5.1f}%] Generated file {file_idx:03d} ({rows_in_file:,} rows) [{', '.join(formats)}]")
     
     print()
     print("=" * 60)
-    print(f"Generation complete!")
+    print("Generation complete!")
     print(f"Total rows: {total_generated:,}")
     print(f"Files: {num_files}")
-    print(f"Location: {output_dir}")
+    if generate_parquet:
+        print(f"Parquet: {parquet_dir}")
+    if generate_avro:
+        print(f"Avro: {avro_dir}")
     print("=" * 60)
     
     return 0

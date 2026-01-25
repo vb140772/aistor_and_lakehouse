@@ -25,7 +25,6 @@ This project compares the performance and efficiency of **Avro** and **Parquet**
 ### Prerequisites
 
 - Python 3.11+
-- Google Cloud SDK (for data download from GCS)
 
 ### Installation
 
@@ -34,10 +33,23 @@ This project compares the performance and efficiency of **Avro** and **Parquet**
    pip install -r requirements.txt
    ```
 
-2. **Download data from GCS**:
+2. **Get test data** (from shared `taxi_data/` folder):
    ```bash
-   ./scripts/download_from_gcs_rsync.sh
+   cd ../taxi_data
+
+   # Install data generation dependencies
+   pip install -r requirements.txt
+
+   # Generate synthetic data (recommended, no external dependencies)
+   ./scripts/generate_synthetic.py              # 1M rows (default)
+   ./scripts/generate_synthetic.py --rows 5     # 5M rows
+   ./scripts/generate_synthetic.py --format both  # Both Parquet and Avro
+
+   # Or download real data from GCS (requires GCP access)
+   ./scripts/download_from_gcs.sh
    ```
+
+   See [taxi_data/README.md](../taxi_data/README.md) for more options.
 
 3. **Run analysis**:
    ```bash
@@ -48,15 +60,17 @@ This project compares the performance and efficiency of **Avro** and **Parquet**
 
 ```mermaid
 graph TD
-    A[GCS Bucket] -->|gcloud rsync| B[Local: ./data/avro/]
-    A -->|gcloud rsync| C[Local: ./data/parquet/]
-    B -->|DuckDB read_avro| D[DuckDB Engine<br/>20GB memory, 4 threads]
-    C -->|DuckDB read_parquet| D
-    D -->|SQL Query| E[Results<br/>90 companies aggregated]
+    DataSource["taxi_data/"]
+    AvroFiles["data/avro/*.avro"]
+    ParquetFiles["data/parquet/*.parquet"]
+    DuckDB["DuckDB Engine"]
+    Results["Results: 90 companies"]
     
-    style A fill:#34a853
-    style D fill:#ea4335
-    style E fill:#fbbc04
+    DataSource --> AvroFiles
+    DataSource --> ParquetFiles
+    AvroFiles -->|"read_avro()"| DuckDB
+    ParquetFiles -->|"read_parquet()"| DuckDB
+    DuckDB -->|"GROUP BY company"| Results
 ```
 
 ## Project Structure
@@ -67,11 +81,18 @@ duckdb-format-analysis/
 │   └── run_analysis.py        # Main DuckDB analysis script
 ├── scripts/
 │   ├── run_analysis.sh        # Main entry point
-│   ├── run_local_analysis.sh  # Run analysis locally
-│   └── download_from_gcs_rsync.sh  # Download data from GCS
-├── data/                      # Data directory (Avro + Parquet files)
+│   └── run_local_analysis.sh  # Run analysis locally
+├── data/                      # Symlink to ../taxi_data
 ├── requirements.txt
 └── README.md
+
+# Shared data folder (at repository root)
+../taxi_data/
+├── scripts/
+│   ├── generate_synthetic.py  # Generate test data
+│   └── download_from_gcs.sh   # Download from GCS
+├── parquet/                   # Parquet files
+└── avro/                      # Avro files
 ```
 
 ## File Format Comparison

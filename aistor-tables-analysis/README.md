@@ -45,16 +45,22 @@ This project demonstrates end-to-end integration of **MinIO AIStor Tables** (nat
    ./scripts/start_services.sh
    ```
 
-4. **Generate test data** (recommended):
+4. **Get test data** (from shared `taxi_data/` folder):
    ```bash
-   ./scripts/generate_synthetic_data.py           # 1M rows (default)
-   ./scripts/generate_synthetic_data.py --rows 5  # 5M rows
+   cd ../taxi_data
+
+   # Install data generation dependencies
+   pip install -r requirements.txt
+
+   # Generate synthetic data (recommended, no external dependencies)
+   ./scripts/generate_synthetic.py           # 1M rows (default)
+   ./scripts/generate_synthetic.py --rows 5  # 5M rows
+
+   # Or download real data from GCS (requires GCP access)
+   ./scripts/download_from_gcs.sh
    ```
 
-   Or download real Chicago taxi data from GCS (requires GCP access):
-   ```bash
-   ./scripts/download_from_gcs_rsync.sh
-   ```
+   See [taxi_data/README.md](../taxi_data/README.md) for more options.
 
 5. **Run analysis**:
    ```bash
@@ -119,12 +125,18 @@ aistor-tables-analysis/
 ├── scripts/
 │   ├── start_services.sh        # Start Docker services
 │   ├── stop_services.sh         # Stop Docker services
-│   ├── run_trino_analysis.sh    # Run analysis
-│   ├── generate_synthetic_data.py  # Generate test data
-│   └── download_from_gcs_rsync.sh  # Download from GCS (optional)
-├── data/                        # Local Parquet files (gitignored)
+│   └── run_trino_analysis.sh    # Run analysis
+├── data/                        # Symlink to ../taxi_data
 ├── requirements.txt
 └── README.md
+
+# Shared data folder (at repository root)
+../taxi_data/
+├── scripts/
+│   ├── generate_synthetic.py    # Generate test data
+│   └── download_from_gcs.sh     # Download from GCS
+├── parquet/                     # Parquet files
+└── avro/                        # Avro files
 ```
 
 ## Configuration

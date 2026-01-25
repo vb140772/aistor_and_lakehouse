@@ -1,25 +1,31 @@
 #!/bin/bash
-# Download exported files from GCS to local filesystem using gcloud rsync
-# Usage: ./download_from_gcs_rsync.sh [bucket_name]
+# Download Chicago taxi trip data from GCS
+# Usage: ./download_from_gcs.sh [bucket_name]
+#
+# Downloads both Avro and Parquet formats for use by:
+# - aistor-tables-analysis (Parquet)
+# - duckdb-format-analysis (Avro + Parquet)
 
 set -e  # Exit on error
 
-BUCKET_NAME="${1:-bq-export-chicago-taxi-433717}"
-LOCAL_BASE_DIR="./data"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TAXI_DATA_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Local directories for each format
-AVRO_DIR="${LOCAL_BASE_DIR}/avro"
-PARQUET_DIR="${LOCAL_BASE_DIR}/parquet"
+BUCKET_NAME="${1:-bq-export-chicago-taxi-433717}"
+
+# Output directories
+AVRO_DIR="${TAXI_DATA_DIR}/avro"
+PARQUET_DIR="${TAXI_DATA_DIR}/parquet"
 
 # GCS source paths
 GCS_AVRO_PATH="gs://${BUCKET_NAME}/exports/dec_2023/avro/"
 GCS_PARQUET_PATH="gs://${BUCKET_NAME}/exports/dec_2023/parquet/"
 
 echo "========================================="
-echo "Downloading files from GCS to local"
+echo "Chicago Taxi Data - GCS Download"
 echo "========================================="
 echo "Bucket: ${BUCKET_NAME}"
-echo "Local base directory: ${LOCAL_BASE_DIR}"
+echo "Output: ${TAXI_DATA_DIR}"
 echo ""
 
 # Create local directories
@@ -35,6 +41,8 @@ else
     echo "Using gsutil rsync..."
 fi
 
+echo ""
+
 # Download Avro files
 echo "Downloading Avro files from ${GCS_AVRO_PATH}..."
 ${RSYNC_CMD} -r "${GCS_AVRO_PATH}" "${AVRO_DIR}/" || {
@@ -42,6 +50,7 @@ ${RSYNC_CMD} -r "${GCS_AVRO_PATH}" "${AVRO_DIR}/" || {
 }
 
 # Download Parquet files
+echo ""
 echo "Downloading Parquet files from ${GCS_PARQUET_PATH}..."
 ${RSYNC_CMD} -r "${GCS_PARQUET_PATH}" "${PARQUET_DIR}/" || {
     echo "Warning: Parquet download failed or no files to download."
@@ -55,9 +64,9 @@ echo ""
 echo "========================================="
 echo "Download Summary"
 echo "========================================="
-echo "Avro files downloaded: ${AVRO_COUNT}"
-echo "Parquet files downloaded: ${PARQUET_COUNT}"
+echo "Avro files:    ${AVRO_COUNT}"
+echo "Parquet files: ${PARQUET_COUNT}"
 echo ""
-echo "Files are available at:"
-echo "  Avro: ${AVRO_DIR}"
+echo "Location: ${TAXI_DATA_DIR}"
+echo "  Avro:    ${AVRO_DIR}"
 echo "  Parquet: ${PARQUET_DIR}"

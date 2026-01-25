@@ -1,5 +1,6 @@
-# Data directory (large files downloaded from GCS)
-data/
+# Taxi data files (large, downloaded or generated)
+taxi_data/parquet/
+taxi_data/avro/
 
 # Python
 __pycache__/
