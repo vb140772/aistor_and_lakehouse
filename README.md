@@ -156,7 +156,3 @@ aistor_and_lakehouse/
     ├── test-vm.yaml
     └── run-tests.sh
 ```
-
-## License
-
-Proprietary - MinIO, Inc.
