@@ -30,6 +30,33 @@ Data lakehouse analytics projects demonstrating MinIO AIStor Tables (native Iceb
 └─────────────────────────────────┘ └─────────────────────────────┘
 ```
 
+## Setup
+
+### 1. Configure MinIO License (Required for AIStor Analysis)
+
+```bash
+# Copy the example configuration
+cp aistor-tables-analysis/docker/.env.example aistor-tables-analysis/docker/.env
+
+# Edit .env and add your license key (get one from https://subnet.min.io)
+```
+
+The `.env` file contains:
+
+| Variable | Description |
+|----------|-------------|
+| `MINIO_LICENSE` | Your MinIO AIStor license key (required) |
+| `MINIO_TEST_IMAGE` | AIStor Docker image version |
+| `TRINO_IMAGE` | Trino query engine version |
+
+**Note:** The `.env` file is gitignored to protect your license key.
+
+### 2. Prerequisites
+
+- Python 3.8+ (3.11+ recommended)
+- Docker and Docker Compose
+- Lima (`brew install lima`) - optional, for VM mode
+
 ## Quick Start
 
 ### Unified Test Runner (Recommended)
@@ -104,42 +131,6 @@ cp docker/.env.example docker/.env
 - Spark ingestion: ~4s for 10M rows
 - Trino query: ~1s for aggregation
 - Benefits: ACID transactions, schema evolution, time travel
-
-## Prerequisites
-
-- Python 3.8+ (3.11+ recommended)
-- Docker and Docker Compose (for AIStor analysis)
-- MinIO AIStor license (for AIStor analysis)
-- Lima (`brew install lima`) - optional, for VM mode testing
-
-## Configuration
-
-### MinIO AIStor License
-
-The AIStor Tables analysis requires a MinIO license. Configure it before running:
-
-```bash
-# Copy the example configuration
-cp aistor-tables-analysis/docker/.env.example aistor-tables-analysis/docker/.env
-
-# Edit .env and add your license key
-# Get a license from https://subnet.min.io
-```
-
-The `.env` file should contain:
-
-```bash
-# MinIO AIStor Image
-MINIO_TEST_IMAGE=quay.io/minio/aistor/minio:EDGE.2025-12-13T08-46-12Z
-
-# MinIO License (required for Tables/Iceberg feature)
-MINIO_LICENSE=your-license-key-here
-
-# Trino Query Engine
-TRINO_IMAGE=trinodb/trino:477
-```
-
-**Note:** The `.env` file is gitignored to protect your license key.
 
 ## Repository Structure
 
