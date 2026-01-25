@@ -112,6 +112,35 @@ cp docker/.env.example docker/.env
 - MinIO AIStor license (for AIStor analysis)
 - Lima (`brew install lima`) - optional, for VM mode testing
 
+## Configuration
+
+### MinIO AIStor License
+
+The AIStor Tables analysis requires a MinIO license. Configure it before running:
+
+```bash
+# Copy the example configuration
+cp aistor-tables-analysis/docker/.env.example aistor-tables-analysis/docker/.env
+
+# Edit .env and add your license key
+# Get a license from https://subnet.min.io
+```
+
+The `.env` file should contain:
+
+```bash
+# MinIO AIStor Image
+MINIO_TEST_IMAGE=quay.io/minio/aistor/minio:EDGE.2025-12-13T08-46-12Z
+
+# MinIO License (required for Tables/Iceberg feature)
+MINIO_LICENSE=your-license-key-here
+
+# Trino Query Engine
+TRINO_IMAGE=trinodb/trino:477
+```
+
+**Note:** The `.env` file is gitignored to protect your license key.
+
 ## Repository Structure
 
 ```
