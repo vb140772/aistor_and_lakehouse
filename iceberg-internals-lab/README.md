@@ -115,6 +115,93 @@ Queries historical data:
 - Query data at previous snapshots
 - Compare current vs historical state
 
+## Inspection Utilities
+
+The lab includes utility scripts to inspect Avro and Parquet files directly. These are useful for understanding the internal structure of Iceberg metadata and data files.
+
+### When to Use
+
+- **Inspect Avro files** (`inspect_avro.py`): When examining Iceberg manifest-list files (`snap-*.avro`) or manifest files (`*-m*.avro`) to see:
+  - Schema structure
+  - Manifest entries (file paths, row counts, partition info)
+  - Delete file tracking
+
+- **Inspect Parquet files** (`inspect_parquet.py`): When examining Iceberg data files (`*.parquet`) to see:
+  - Column schema and types
+  - Row counts and file statistics
+  - Compression information
+  - Sample data records
+
+### Usage Examples
+
+#### Inspect Avro Files (Manifests)
+
+```bash
+# Inspect a manifest-list file
+mc cat local/iceberglab/<table-uuid>/metadata/snap-*.avro | \
+  python scripts/inspect_avro.py
+
+# Show sample manifest entries
+mc cat local/iceberglab/<table-uuid>/metadata/snap-*.avro | \
+  python scripts/inspect_avro.py --show-records
+
+# Use JSON format instead of YAML
+mc cat local/iceberglab/<table-uuid>/metadata/snap-*.avro | \
+  python scripts/inspect_avro.py --format json
+```
+
+#### Inspect Parquet Files (Data Files)
+
+```bash
+# Inspect a data file
+mc cat local/iceberglab/<table-uuid>/data/*.parquet | \
+  python scripts/inspect_parquet.py
+
+# Show sample records from the file
+mc cat local/iceberglab/<table-uuid>/data/*.parquet | \
+  python scripts/inspect_parquet.py --show-records
+
+# Show more sample records
+mc cat local/iceberglab/<table-uuid>/data/*.parquet | \
+  python scripts/inspect_parquet.py --show-records --max-records 10
+```
+
+#### Finding Files to Inspect
+
+After running the lab, you can find files to inspect:
+
+```bash
+# List all files in the warehouse
+mc ls -r local/iceberglab/
+
+# Find manifest-list files
+mc find local/iceberglab --name "snap-*.avro"
+
+# Find data files
+mc find local/iceberglab --name "*.parquet"
+```
+
+### Output Format
+
+Both utilities use **YAML format by default** (more compact and readable) with syntax highlighting:
+- Schema information with types and metadata
+- File statistics (size, row counts, compression)
+- Sample records (when using `--show-records`)
+
+Use `--format json` to switch to JSON output if preferred.
+
+### Requirements
+
+The inspection utilities require:
+- `fastavro` (for Avro files) - already in `requirements.txt`
+- `pyarrow` (for Parquet files) - already in `requirements.txt`
+- `pyyaml` (for YAML output) - already in `requirements.txt`
+
+Install all dependencies:
+```bash
+pip install -r requirements.txt
+```
+
 ## Cleanup
 
 ```bash
