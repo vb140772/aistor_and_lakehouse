@@ -19,3 +19,9 @@ rich>=13.0.0
 fastavro>=1.9.0
 
 # JSON handling
+
+# YAML support (for compact output)
+pyyaml>=6.0
+
+# Parquet file support
+pyarrow>=14.0.0
