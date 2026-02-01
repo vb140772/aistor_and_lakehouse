@@ -13,6 +13,8 @@ Learning Objectives:
 5. Experience time travel queries across snapshots
 """
 
+import argparse
+import sys
 import time
 import random
 from datetime import datetime, timedelta
@@ -83,6 +85,48 @@ def print_step(step_num: int, title: str, description: str):
     console.print()
 
 
+def show_storage(mode: str) -> bool:
+    """Return True if storage-mode output should be shown."""
+    return mode in ('full', 'storage')
+
+
+def show_sql(mode: str) -> bool:
+    """Return True if SQL-mode output should be shown."""
+    return mode in ('full', 'sql')
+
+
+def run_verify_sql(cur, statements: List[Tuple[str, str]], max_rows: int = 10):
+    """Execute verification SQL statements and display results.
+    
+    Args:
+        cur: Trino cursor
+        statements: List of (sql, description) tuples
+        max_rows: Maximum rows to display per query (default 10)
+    """
+    from rich.syntax import Syntax
+    
+    for sql, description in statements:
+        console.print(f"\n[bold]{description}[/bold]")
+        console.print(Syntax(sql.strip(), "sql", theme="monokai", padding=1))
+        try:
+            cur.execute(sql.strip())
+            rows = cur.fetchall()
+            if rows:
+                col_names = [desc[0] for desc in (cur.description or [])]
+                result_table = Table(show_header=True, header_style="bold")
+                for col in col_names:
+                    result_table.add_column(col)
+                for row in rows[:max_rows]:
+                    result_table.add_row(*[str(v) if v is not None else "NULL" for v in row])
+                console.print(result_table)
+                if len(rows) > max_rows:
+                    console.print(f"[dim]... and {len(rows) - max_rows} more rows[/dim]")
+            else:
+                console.print("[dim](no rows)[/dim]")
+        except Exception as e:
+            console.print(f"[yellow]Warning: {e}[/yellow]")
+
+
 def get_trino_connection():
     """Create a Trino connection."""
     return connect(
@@ -137,7 +181,7 @@ def cleanup_previous_run(explorer: CatalogExplorer, trino_conn):
     console.print("[green]Cleanup complete![/green]\n")
 
 
-def setup_catalog(explorer: CatalogExplorer, trino_conn) -> bool:
+def setup_catalog(explorer: CatalogExplorer, trino_conn, mode: str = 'full') -> bool:
     """Set up the Iceberg catalog in Trino."""
     from rich.syntax import Syntax
     
@@ -211,10 +255,22 @@ WITH (
     
     console.print("  [green]✓[/green] Catalog 'iceberg_catalog' created in Trino\n")
     console.print("[bold green]Setup complete![/bold green]")
+    
+    # Verify with Trino SQL - execute and show results (SQL mode only)
+    if show_sql(mode):
+        console.print("\n[bold]Verify with Trino SQL:[/bold]")
+        verify_statements = [
+            ("SHOW CATALOGS", "Confirm catalog exists"),
+            ("SHOW SCHEMAS IN iceberg_catalog", "List schemas (namespace) in catalog"),
+            ("SELECT catalog_name, schema_name FROM iceberg_catalog.information_schema.schemata",
+             "Schemas via information_schema"),
+        ]
+        run_verify_sql(cur, verify_statements)
+    
     return True
 
 
-def step1_create_table(explorer: CatalogExplorer, trino_conn):
+def step1_create_table(explorer: CatalogExplorer, trino_conn, mode: str = 'full'):
     """Step 1: Create an Iceberg table and examine the metadata."""
     print_step(1, "Create Table", 
                "Create an Iceberg table and examine what gets created in the catalog and storage")
@@ -268,85 +324,99 @@ def step1_create_table(explorer: CatalogExplorer, trino_conn):
     console.print(f"\n[bold]Result:[/bold]")
     console.print(f"  [green]✓[/green] Table '{TABLE_NAME}' created in {create_time:.3f}s")
     
+    # Verify with Trino SQL - execute and show results (SQL mode only)
+    if show_sql(mode):
+        console.print("\n[bold]Verify with Trino SQL:[/bold]")
+        verify_statements = [
+            (f"SHOW TABLES IN iceberg_catalog.{NAMESPACE}", "Tables in schema"),
+            (f"DESCRIBE iceberg_catalog.{NAMESPACE}.{TABLE_NAME}", "Table schema (columns)"),
+            (f'SELECT * FROM iceberg_catalog.{NAMESPACE}."{TABLE_NAME}$properties"',
+             "Table properties"),
+            (f'SELECT snapshot_id, operation FROM iceberg_catalog.{NAMESPACE}."{TABLE_NAME}$snapshots"',
+             "Snapshots (empty - no data committed yet)"),
+        ]
+        run_verify_sql(cur, verify_statements)
+    
     wait_for_key()
     
-    # Show catalog structure
-    console.print("\n[bold cyan]Catalog Structure:[/bold cyan]")
-    explorer.print_catalog_structure(WAREHOUSE)
+    # Show catalog structure (storage mode only)
+    if show_storage(mode):
+        console.print("\n[bold cyan]Catalog Structure:[/bold cyan]")
+        explorer.print_catalog_structure(WAREHOUSE)
+        wait_for_key()
     
-    wait_for_key()
-    
-    # Show table metadata
-    console.print("\n[bold cyan]Table Metadata from Catalog:[/bold cyan]")
-    metadata = explorer.get_table_metadata(WAREHOUSE, NAMESPACE, TABLE_NAME)
-    if metadata:
-        # Show key parts of metadata
-        console.print("\n[bold]Key Metadata Fields:[/bold]")
-        table = Table(show_header=True, header_style="bold")
-        table.add_column("Field")
-        table.add_column("Value")
-        
-        meta = metadata.get("metadata", {})
-        table.add_row("Format Version", str(meta.get("format-version", "")))
-        table.add_row("Table UUID", meta.get("table-uuid", "")[:36] + "...")
-        table.add_row("Location", meta.get("location", ""))
-        table.add_row("Last Sequence Number", str(meta.get("last-sequence-number", 0)))
-        table.add_row("Current Snapshot ID", str(meta.get("current-snapshot-id", "None")))
-        table.add_row("Total Snapshots", str(len(meta.get("snapshots", []))))
-        
-        console.print(table)
-        
-        # Show partition spec
-        partition_specs = meta.get("partition-specs", [])
-        if partition_specs:
-            console.print("\n[bold]Partition Spec:[/bold]")
-            for spec in partition_specs:
-                fields = spec.get("fields", [])
-                if fields:
-                    console.print(f"  Spec ID {spec.get('spec-id')}: {fields}")
-                else:
-                    console.print(f"  Spec ID {spec.get('spec-id')}: [dim]unpartitioned[/dim]")
-        
-        # Show current snapshot summary (if exists)
-        snapshots = meta.get("snapshots", [])
-        current_snapshot_id = meta.get("current-snapshot-id")
-        
-        if snapshots and current_snapshot_id:
-            current_snap = next((s for s in snapshots if s.get("snapshot-id") == current_snapshot_id), None)
-            if current_snap:
-                console.print("\n[bold]Current Snapshot Summary:[/bold]")
-                summary = current_snap.get("summary", {})
-                
-                summary_table = Table(show_header=True, header_style="bold")
-                summary_table.add_column("Metric")
-                summary_table.add_column("Value", justify="right")
-                
-                summary_table.add_row("Operation", summary.get("operation", ""))
-                summary_table.add_row("Total Data Files", summary.get("total-data-files", "0"))
-                summary_table.add_row("Total Delete Files", summary.get("total-delete-files", "0"))
-                summary_table.add_row("Total Records", f"{int(summary.get('total-records', 0)):,}")
-                summary_table.add_row("Total Files Size", explorer._format_size(int(summary.get("total-files-size-in-bytes", 0))))
-                summary_table.add_row("Added Data Files", summary.get("added-data-files", "0"))
-                summary_table.add_row("Added Records", f"{int(summary.get('added-records', 0)):,}")
-                
-                console.print(summary_table)
-                
-                # Show manifest-list path
-                manifest_list = current_snap.get("manifest-list", "")
-                if manifest_list:
-                    console.print(f"\n[bold]Manifest-List File:[/bold]")
-                    console.print(f"  [dim]{manifest_list.split('/')[-1]}[/dim]")
+    # Show table metadata (storage mode only)
+    if show_storage(mode):
+        console.print("\n[bold cyan]Table Metadata from Catalog:[/bold cyan]")
+        metadata = explorer.get_table_metadata(WAREHOUSE, NAMESPACE, TABLE_NAME)
+        if metadata:
+            # Show key parts of metadata
+            console.print("\n[bold]Key Metadata Fields:[/bold]")
+            table = Table(show_header=True, header_style="bold")
+            table.add_column("Field")
+            table.add_column("Value")
+            
+            meta = metadata.get("metadata", {})
+            table.add_row("Format Version", str(meta.get("format-version", "")))
+            table.add_row("Table UUID", meta.get("table-uuid", "")[:36] + "...")
+            table.add_row("Location", meta.get("location", ""))
+            table.add_row("Last Sequence Number", str(meta.get("last-sequence-number", 0)))
+            table.add_row("Current Snapshot ID", str(meta.get("current-snapshot-id", "None")))
+            table.add_row("Total Snapshots", str(len(meta.get("snapshots", []))))
+            
+            console.print(table)
+            
+            # Show partition spec
+            partition_specs = meta.get("partition-specs", [])
+            if partition_specs:
+                console.print("\n[bold]Partition Spec:[/bold]")
+                for spec in partition_specs:
+                    fields = spec.get("fields", [])
+                    if fields:
+                        console.print(f"  Spec ID {spec.get('spec-id')}: {fields}")
+                    else:
+                        console.print(f"  Spec ID {spec.get('spec-id')}: [dim]unpartitioned[/dim]")
+            
+            # Show current snapshot summary (if exists)
+            snapshots = meta.get("snapshots", [])
+            current_snapshot_id = meta.get("current-snapshot-id")
+            
+            if snapshots and current_snapshot_id:
+                current_snap = next((s for s in snapshots if s.get("snapshot-id") == current_snapshot_id), None)
+                if current_snap:
+                    console.print("\n[bold]Current Snapshot Summary:[/bold]")
+                    summary = current_snap.get("summary", {})
                     
-                    # Parse and show manifest-list content
-                    explorer.print_manifest_list(manifest_list)
-        else:
-            console.print("\n[dim]No snapshots yet (empty table)[/dim]")
-    
-    wait_for_key()
-    
-    # Show files in MinIO
-    console.print("\n[bold cyan]Files in MinIO Storage:[/bold cyan]")
-    explorer.print_file_table(WAREHOUSE)
+                    summary_table = Table(show_header=True, header_style="bold")
+                    summary_table.add_column("Metric")
+                    summary_table.add_column("Value", justify="right")
+                    
+                    summary_table.add_row("Operation", summary.get("operation", ""))
+                    summary_table.add_row("Total Data Files", summary.get("total-data-files", "0"))
+                    summary_table.add_row("Total Delete Files", summary.get("total-delete-files", "0"))
+                    summary_table.add_row("Total Records", f"{int(summary.get('total-records', 0)):,}")
+                    summary_table.add_row("Total Files Size", explorer._format_size(int(summary.get("total-files-size-in-bytes", 0))))
+                    summary_table.add_row("Added Data Files", summary.get("added-data-files", "0"))
+                    summary_table.add_row("Added Records", f"{int(summary.get('added-records', 0)):,}")
+                    
+                    console.print(summary_table)
+                    
+                    # Show manifest-list path
+                    manifest_list = current_snap.get("manifest-list", "")
+                    if manifest_list:
+                        console.print(f"\n[bold]Manifest-List File:[/bold]")
+                        console.print(f"  [dim]{manifest_list.split('/')[-1]}[/dim]")
+                        
+                        # Parse and show manifest-list content
+                        explorer.print_manifest_list(manifest_list)
+            else:
+                console.print("\n[dim]No snapshots yet (empty table)[/dim]")
+        
+        wait_for_key()
+        
+        # Show files in MinIO
+        console.print("\n[bold cyan]Files in MinIO Storage:[/bold cyan]")
+        explorer.print_file_table(WAREHOUSE)
     
     console.print("\n[bold green]Key Observation:[/bold green]")
     console.print("  - Table created with metadata.json file")
@@ -354,7 +424,7 @@ def step1_create_table(explorer: CatalogExplorer, trino_conn):
     console.print("  - No snapshots (no data has been committed)")
 
 
-def step2_insert_data(explorer: CatalogExplorer, trino_conn):
+def step2_insert_data(explorer: CatalogExplorer, trino_conn, mode: str = 'full'):
     """Step 2: Insert 1000 rows and examine the changes."""
     print_step(2, "Insert Data",
                "Insert 1000 rows and see how new data files and snapshots are created")
@@ -413,55 +483,50 @@ def step2_insert_data(explorer: CatalogExplorer, trino_conn):
     
     wait_for_key()
     
-    # Show row count
-    cur.execute(f"SELECT COUNT(*) FROM iceberg_catalog.{NAMESPACE}.{TABLE_NAME}")
-    count = cur.fetchone()[0]
-    console.print(f"\n[bold]Table row count: {count}[/bold]")
+    # Show row count, sample data, department breakdown (SQL mode only)
+    if show_sql(mode):
+        cur.execute(f"SELECT COUNT(*) FROM iceberg_catalog.{NAMESPACE}.{TABLE_NAME}")
+        count = cur.fetchone()[0]
+        console.print(f"\n[bold]Table row count: {count}[/bold]")
+        
+        console.print("\n[bold cyan]Sample Data (first 5 rows):[/bold cyan]")
+        cur.execute(f"SELECT * FROM iceberg_catalog.{NAMESPACE}.{TABLE_NAME} LIMIT 5")
+        rows = cur.fetchall()
+        
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("ID")
+        table.add_column("Name")
+        table.add_column("Department")
+        table.add_column("Salary")
+        table.add_column("Hire Date")
+        
+        for row in rows:
+            table.add_row(str(row[0]), row[1], row[2], f"${row[3]:,.2f}", str(row[4]))
+        
+        console.print(table)
+        
+        console.print("\n[bold cyan]Rows by Department:[/bold cyan]")
+        cur.execute(f"""
+            SELECT department, COUNT(*) as count 
+            FROM iceberg_catalog.{NAMESPACE}.{TABLE_NAME} 
+            GROUP BY department 
+            ORDER BY count DESC
+        """)
+        dept_rows = cur.fetchall()
+        
+        dept_table = Table(show_header=True, header_style="bold")
+        dept_table.add_column("Department")
+        dept_table.add_column("Count", justify="right")
+        
+        for row in dept_rows:
+            dept_table.add_row(row[0], str(row[1]))
+        
+        console.print(dept_table)
+        wait_for_key()
     
-    # Show sample data
-    console.print("\n[bold cyan]Sample Data (first 5 rows):[/bold cyan]")
-    cur.execute(f"SELECT * FROM iceberg_catalog.{NAMESPACE}.{TABLE_NAME} LIMIT 5")
-    rows = cur.fetchall()
-    
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("ID")
-    table.add_column("Name")
-    table.add_column("Department")
-    table.add_column("Salary")
-    table.add_column("Hire Date")
-    
-    for row in rows:
-        table.add_row(str(row[0]), row[1], row[2], f"${row[3]:,.2f}", str(row[4]))
-    
-    console.print(table)
-    
-    wait_for_key()
-    
-    # Show department breakdown
-    console.print("\n[bold cyan]Rows by Department:[/bold cyan]")
-    cur.execute(f"""
-        SELECT department, COUNT(*) as count 
-        FROM iceberg_catalog.{NAMESPACE}.{TABLE_NAME} 
-        GROUP BY department 
-        ORDER BY count DESC
-    """)
-    dept_rows = cur.fetchall()
-    
-    dept_table = Table(show_header=True, header_style="bold")
-    dept_table.add_column("Department")
-    dept_table.add_column("Count", justify="right")
-    
-    for row in dept_rows:
-        dept_table.add_row(row[0], str(row[1]))
-    
-    console.print(dept_table)
-    
-    wait_for_key()
-    
-    # Show updated metadata
-    console.print("\n[bold cyan]Updated Table Metadata:[/bold cyan]")
-    metadata = explorer.get_table_metadata(WAREHOUSE, NAMESPACE, TABLE_NAME)
-    if metadata:
+    # Show updated metadata (storage mode only)
+    metadata = explorer.get_table_metadata(WAREHOUSE, NAMESPACE, TABLE_NAME) if show_storage(mode) else None
+    if show_storage(mode) and metadata:
         meta = metadata.get("metadata", {})
         snapshots = meta.get("snapshots", [])
         current_snapshot_id = meta.get("current-snapshot-id")
@@ -491,12 +556,27 @@ def step2_insert_data(explorer: CatalogExplorer, trino_conn):
                 summary_table.add_row("Added Records", f"{int(summary.get('added-records', 0)):,}")
                 
                 console.print(summary_table)
+        wait_for_key()
     
-    wait_for_key()
+    # Verify with Trino SQL (SQL mode only)
+    if show_sql(mode):
+        console.print("\n[bold]Verify with Trino SQL:[/bold]")
+        verify_statements = [
+            (f"SELECT COUNT(*) FROM iceberg_catalog.{NAMESPACE}.{TABLE_NAME}",
+             "Row count"),
+            (f'SELECT snapshot_id, operation, summary FROM iceberg_catalog.{NAMESPACE}."{TABLE_NAME}$snapshots"',
+             "Snapshots with operation and summary"),
+            (f'SELECT file_path, record_count, file_format FROM iceberg_catalog.{NAMESPACE}."{TABLE_NAME}$files"',
+             "Data files created"),
+            (f'SELECT path, added_data_files_count, added_rows_count FROM iceberg_catalog.{NAMESPACE}."{TABLE_NAME}$manifests"',
+             "Manifest files"),
+        ]
+        run_verify_sql(cur, verify_statements, max_rows=5)
+        wait_for_key()
     
-    # Show manifest-list entries
-    console.print("\n[bold cyan]Manifest-List Contents (Iceberg's File Index):[/bold cyan]")
-    if metadata:
+    # Show manifest-list entries (storage mode only)
+    if show_storage(mode) and metadata:
+        console.print("\n[bold cyan]Manifest-List Contents (Iceberg's File Index):[/bold cyan]")
         manifest_list_path = explorer.get_current_manifest_list_path(metadata)
         if manifest_list_path:
             console.print(f"\n[bold]Manifest-List File:[/bold] [dim]{manifest_list_path.split('/')[-1]}[/dim]")
@@ -512,12 +592,11 @@ def step2_insert_data(explorer: CatalogExplorer, trino_conn):
                 console.print(f"\n[bold]Manifest File Contents:[/bold] [dim]{first_manifest.split('/')[-1]}[/dim]")
                 console.print("[dim]This Avro file lists individual data files with their metadata[/dim]")
                 explorer.print_manifest_data_files(first_manifest, limit=5)
-    
-    wait_for_key()
-    
-    # Show files
-    console.print("\n[bold cyan]Files in MinIO Storage:[/bold cyan]")
-    explorer.print_file_table(WAREHOUSE)
+        wait_for_key()
+        
+        # Show files
+        console.print("\n[bold cyan]Files in MinIO Storage:[/bold cyan]")
+        explorer.print_file_table(WAREHOUSE)
     
     console.print("\n[bold green]Key Observations:[/bold green]")
     console.print("  - New Parquet data files created for inserted rows")
@@ -528,7 +607,7 @@ def step2_insert_data(explorer: CatalogExplorer, trino_conn):
     console.print("  - Tip: Use single INSERT for fewer snapshots, less metadata overhead")
 
 
-def step3_delete_data(explorer: CatalogExplorer, trino_conn):
+def step3_delete_data(explorer: CatalogExplorer, trino_conn, mode: str = 'full'):
     """Step 3: Demonstrate delete operation and its effect on Iceberg files."""
     print_step(3, "Delete Data",
                "Delete rows and see how Iceberg tracks deletions with position delete files")
@@ -546,15 +625,15 @@ def step3_delete_data(explorer: CatalogExplorer, trino_conn):
     console.print(f"  Total rows: {total_before:,}")
     console.print(f"  Sales department rows: {sales_count}")
     
-    # Show metadata BEFORE delete
-    console.print("\n[bold cyan]═══════════════════════════════════════════════════════════════[/bold cyan]")
-    console.print("[bold cyan]              Table State BEFORE Delete                         [/bold cyan]")
-    console.print("[bold cyan]═══════════════════════════════════════════════════════════════[/bold cyan]")
+    # Show metadata BEFORE delete (storage mode only)
+    metadata_before = explorer.get_table_metadata(WAREHOUSE, NAMESPACE, TABLE_NAME) if show_storage(mode) else None
+    files_before = explorer.count_table_files(WAREHOUSE, NAMESPACE, TABLE_NAME) if show_storage(mode) else {}
+    files_after = {}  # Set after delete
     
-    metadata_before = explorer.get_table_metadata(WAREHOUSE, NAMESPACE, TABLE_NAME)
-    files_before = explorer.count_table_files(WAREHOUSE, NAMESPACE, TABLE_NAME)
-    
-    if metadata_before:
+    if show_storage(mode) and metadata_before:
+        console.print("\n[bold cyan]═══════════════════════════════════════════════════════════════[/bold cyan]")
+        console.print("[bold cyan]              Table State BEFORE Delete                         [/bold cyan]")
+        console.print("[bold cyan]═══════════════════════════════════════════════════════════════[/bold cyan]")
         console.print("\n[bold]Snapshot History:[/bold]")
         explorer.print_snapshots(metadata_before)
         
@@ -575,8 +654,7 @@ def step3_delete_data(explorer: CatalogExplorer, trino_conn):
         if manifest_list_path:
             console.print(f"\n[bold]Manifest-List:[/bold] [dim]{manifest_list_path.split('/')[-1]}[/dim]")
             explorer.print_manifest_list(manifest_list_path)
-    
-    wait_for_key()
+        wait_for_key()
     
     # Execute DELETE
     from rich.syntax import Syntax
@@ -609,78 +687,95 @@ WHERE department = 'Sales';"""
     wait_for_key()
     
     # Show metadata AFTER delete
-    console.print("\n[bold cyan]═══════════════════════════════════════════════════════════════[/bold cyan]")
-    console.print("[bold cyan]              Table State AFTER Delete (Position Deletes)       [/bold cyan]")
-    console.print("[bold cyan]═══════════════════════════════════════════════════════════════[/bold cyan]")
-    
     metadata_after = explorer.get_table_metadata(WAREHOUSE, NAMESPACE, TABLE_NAME)
-    files_after = explorer.count_table_files(WAREHOUSE, NAMESPACE, TABLE_NAME)
+    if show_storage(mode):
+        files_after = explorer.count_table_files(WAREHOUSE, NAMESPACE, TABLE_NAME)
     
     if metadata_after:
-        console.print("\n[bold]Snapshot History:[/bold]")
-        explorer.print_snapshots(metadata_after)
+        if show_storage(mode):
+            console.print("\n[bold cyan]═══════════════════════════════════════════════════════════════[/bold cyan]")
+            console.print("[bold cyan]              Table State AFTER Delete (Position Deletes)       [/bold cyan]")
+            console.print("[bold cyan]═══════════════════════════════════════════════════════════════[/bold cyan]")
+            console.print("\n[bold]Snapshot History:[/bold]")
+            explorer.print_snapshots(metadata_after)
         
-        # Show current snapshot summary
-        meta = metadata_after.get("metadata", {})
-        snapshots = meta.get("snapshots", [])
-        current_id = meta.get("current-snapshot-id")
-        if snapshots and current_id:
-            current_snap = next((s for s in snapshots if s.get("snapshot-id") == current_id), None)
-            if current_snap:
-                console.print("\n[bold]Current Snapshot Summary (after delete):[/bold]")
-                summary = current_snap.get("summary", {})
-                
-                summary_table = Table(show_header=True, header_style="bold")
-                summary_table.add_column("Metric")
-                summary_table.add_column("Value", justify="right")
-                
-                summary_table.add_row("Operation", summary.get("operation", ""))
-                summary_table.add_row("Total Data Files", summary.get("total-data-files", "0"))
-                summary_table.add_row("Total Delete Files", f"[bold green]{summary.get('total-delete-files', '0')}[/bold green]")
-                summary_table.add_row("Total Records", f"{int(summary.get('total-records', 0)):,}")
-                summary_table.add_row("Added Delete Files", f"[bold green]{summary.get('added-delete-files', '0')}[/bold green]")
-                summary_table.add_row("Position Deletes", f"[bold yellow]{summary.get('added-position-deletes', '0')}[/bold yellow]")
-                summary_table.add_row("Total Position Deletes", summary.get("total-position-deletes", "0"))
-                
-                console.print(summary_table)
+        # Show current snapshot summary (storage mode only)
+        if show_storage(mode):
+            meta = metadata_after.get("metadata", {})
+            snapshots = meta.get("snapshots", [])
+            current_id = meta.get("current-snapshot-id")
+            if snapshots and current_id:
+                current_snap = next((s for s in snapshots if s.get("snapshot-id") == current_id), None)
+                if current_snap:
+                    console.print("\n[bold]Current Snapshot Summary (after delete):[/bold]")
+                    summary = current_snap.get("summary", {})
+                    
+                    summary_table = Table(show_header=True, header_style="bold")
+                    summary_table.add_column("Metric")
+                    summary_table.add_column("Value", justify="right")
+                    
+                    summary_table.add_row("Operation", summary.get("operation", ""))
+                    summary_table.add_row("Total Data Files", summary.get("total-data-files", "0"))
+                    summary_table.add_row("Total Delete Files", f"[bold green]{summary.get('total-delete-files', '0')}[/bold green]")
+                    summary_table.add_row("Total Records", f"{int(summary.get('total-records', 0)):,}")
+                    summary_table.add_row("Added Delete Files", f"[bold green]{summary.get('added-delete-files', '0')}[/bold green]")
+                    summary_table.add_row("Position Deletes", f"[bold yellow]{summary.get('added-position-deletes', '0')}[/bold yellow]")
+                    summary_table.add_row("Total Position Deletes", summary.get("total-position-deletes", "0"))
+                    
+                    console.print(summary_table)
         
-        # Show file count changes
-        console.print("\n[bold]Storage File Changes:[/bold]")
-        file_table = Table(show_header=True, header_style="bold")
-        file_table.add_column("File Type")
-        file_table.add_column("Before", justify="right")
-        file_table.add_column("After", justify="right")
-        file_table.add_column("Change", justify="right")
-        
-        data_before = files_before.get('data', 0)
-        data_after = files_after.get('data', 0)
-        change = data_after - data_before
-        file_table.add_row("Data files (.parquet)", str(data_before), str(data_after), 
-                          f"[green]+{change}[/green]" if change > 0 else str(change))
-        
-        man_before = files_before.get('manifest', 0)
-        man_after = files_after.get('manifest', 0)
-        change = man_after - man_before
-        file_table.add_row("Manifest files (.avro)", str(man_before), str(man_after),
-                          f"[green]+{change}[/green]" if change > 0 else str(change))
-        
-        console.print(file_table)
-        
-        # Show manifest-list content after delete
-        manifest_list_path = explorer.get_current_manifest_list_path(metadata_after)
-        if manifest_list_path:
-            console.print(f"\n[bold]Manifest-List (after delete):[/bold]")
-            explorer.print_manifest_list(manifest_list_path)
+        # Show file count changes (storage mode only)
+        if show_storage(mode):
+            console.print("\n[bold]Storage File Changes:[/bold]")
+            file_table = Table(show_header=True, header_style="bold")
+            file_table.add_column("File Type")
+            file_table.add_column("Before", justify="right")
+            file_table.add_column("After", justify="right")
+            file_table.add_column("Change", justify="right")
             
-            # Show data files from manifest
-            bucket, key = explorer._parse_s3_path(manifest_list_path)
-            manifest_entries = explorer.read_manifest_list(bucket, key)
-            if manifest_entries:
-                for entry in manifest_entries:
-                    if entry["added_data_files_count"] > 0:
-                        console.print(f"\n[bold]Newly Written Data Files (without deleted rows):[/bold]")
-                        explorer.print_manifest_data_files(entry["manifest_path"], limit=3)
-                        break
+            data_before = files_before.get('data', 0)
+            data_after = files_after.get('data', 0)
+            change = data_after - data_before
+            file_table.add_row("Data files (.parquet)", str(data_before), str(data_after), 
+                              f"[green]+{change}[/green]" if change > 0 else str(change))
+            
+            man_before = files_before.get('manifest', 0)
+            man_after = files_after.get('manifest', 0)
+            change = man_after - man_before
+            file_table.add_row("Manifest files (.avro)", str(man_before), str(man_after),
+                              f"[green]+{change}[/green]" if change > 0 else str(change))
+            
+            console.print(file_table)
+        
+        # Verify with Trino SQL (SQL mode only)
+        if show_sql(mode):
+            console.print("\n[bold]Verify with Trino SQL:[/bold]")
+            verify_statements = [
+                (f"SELECT COUNT(*) FROM iceberg_catalog.{NAMESPACE}.{TABLE_NAME}",
+                 "Rows remaining after DELETE"),
+                (f'SELECT snapshot_id, operation FROM iceberg_catalog.{NAMESPACE}."{TABLE_NAME}$snapshots" ORDER BY committed_at',
+                 "Snapshots (including delete)"),
+                (f'SELECT content, file_path FROM iceberg_catalog.{NAMESPACE}."{TABLE_NAME}$files"',
+                 "Files (content: 0=data, 1=position_deletes)"),
+            ]
+            run_verify_sql(cur, verify_statements, max_rows=5)
+        
+        # Show manifest-list content after delete (storage mode only)
+        if show_storage(mode):
+            manifest_list_path = explorer.get_current_manifest_list_path(metadata_after)
+            if manifest_list_path:
+                console.print(f"\n[bold]Manifest-List (after delete):[/bold]")
+                explorer.print_manifest_list(manifest_list_path)
+                
+                # Show data files from manifest
+                bucket, key = explorer._parse_s3_path(manifest_list_path)
+                manifest_entries = explorer.read_manifest_list(bucket, key)
+                if manifest_entries:
+                    for entry in manifest_entries:
+                        if entry["added_data_files_count"] > 0:
+                            console.print(f"\n[bold]Newly Written Data Files (without deleted rows):[/bold]")
+                            explorer.print_manifest_data_files(entry["manifest_path"], limit=3)
+                            break
     
     wait_for_key()
     
@@ -704,7 +799,7 @@ WHERE department = 'Sales';"""
     console.print("  - Compaction merges delete files into data files periodically")
 
 
-def step4_update_data(explorer: CatalogExplorer, trino_conn):
+def step4_update_data(explorer: CatalogExplorer, trino_conn, mode: str = 'full'):
     """Step 4: Update rows and see how updates work."""
     print_step(4, "Update Data",
                "Give everyone a 10% raise and see how Iceberg handles updates")
@@ -776,17 +871,30 @@ SET salary = salary * 1.10;
     
     wait_for_key()
     
-    # Show updated metadata
-    console.print("\n[bold cyan]Updated Snapshot History:[/bold cyan]")
-    metadata = explorer.get_table_metadata(WAREHOUSE, NAMESPACE, TABLE_NAME)
-    if metadata:
-        explorer.print_snapshots(metadata)
+    # Show updated metadata (storage mode only)
+    if show_storage(mode):
+        console.print("\n[bold cyan]Updated Snapshot History:[/bold cyan]")
+        metadata = explorer.get_table_metadata(WAREHOUSE, NAMESPACE, TABLE_NAME)
+        if metadata:
+            explorer.print_snapshots(metadata)
+    
+    # Verify with Trino SQL (SQL mode only)
+    if show_sql(mode):
+        console.print("\n[bold]Verify with Trino SQL:[/bold]")
+        verify_statements = [
+            (f"SELECT AVG(salary) FROM iceberg_catalog.{NAMESPACE}.{TABLE_NAME}",
+             "Average salary after 10% raise"),
+            (f'SELECT snapshot_id, operation, summary FROM iceberg_catalog.{NAMESPACE}."{TABLE_NAME}$snapshots" ORDER BY committed_at DESC',
+             "Snapshots (including overwrite from UPDATE)"),
+        ]
+        run_verify_sql(cur, verify_statements, max_rows=5)
     
     wait_for_key()
     
-    # Show files
-    console.print("\n[bold cyan]Files in MinIO Storage:[/bold cyan]")
-    explorer.print_file_table(WAREHOUSE)
+    # Show files (storage mode only)
+    if show_storage(mode):
+        console.print("\n[bold cyan]Files in MinIO Storage:[/bold cyan]")
+        explorer.print_file_table(WAREHOUSE)
     
     console.print("\n[bold green]Key Observations:[/bold green]")
     console.print("  - UPDATE = DELETE + INSERT in Iceberg")
@@ -795,7 +903,7 @@ SET salary = salary * 1.10;
     console.print("  - Snapshot records both deleted and added records")
 
 
-def step5_time_travel(explorer: CatalogExplorer, trino_conn):
+def step5_time_travel(explorer: CatalogExplorer, trino_conn, mode: str = 'full'):
     """Step 5: Query historical data using time travel."""
     print_step(5, "Time Travel",
                "Query the table at different points in time using snapshots")
@@ -810,8 +918,24 @@ def step5_time_travel(explorer: CatalogExplorer, trino_conn):
         console.print("[yellow]Not enough snapshots for time travel demo[/yellow]")
         return
     
-    console.print("[bold cyan]Available Snapshots:[/bold cyan]")
-    explorer.print_snapshots(metadata)
+    # Available snapshots (storage mode shows from explorer, SQL mode gets from run_verify_sql)
+    if show_storage(mode):
+        console.print("[bold cyan]Available Snapshots:[/bold cyan]")
+        explorer.print_snapshots(metadata)
+    
+    # Verify with Trino SQL (SQL mode only)
+    first_snapshot_id = snapshots[0]["snapshot-id"]
+    if show_sql(mode):
+        console.print("\n[bold]Verify with Trino SQL:[/bold]")
+        verify_statements = [
+            (f'SELECT * FROM iceberg_catalog.{NAMESPACE}."{TABLE_NAME}$history"',
+             "Table history (metadata changes)"),
+            (f'SELECT snapshot_id, parent_id, operation, committed_at FROM iceberg_catalog.{NAMESPACE}."{TABLE_NAME}$snapshots" ORDER BY committed_at',
+             "All snapshots"),
+            (f"SELECT COUNT(*), AVG(salary) FROM iceberg_catalog.{NAMESPACE}.{TABLE_NAME} FOR VERSION AS OF {first_snapshot_id}",
+             f"Time travel: data at snapshot {first_snapshot_id}"),
+        ]
+        run_verify_sql(cur, verify_statements, max_rows=10)
     
     wait_for_key()
     
@@ -854,6 +978,35 @@ def step5_time_travel(explorer: CatalogExplorer, trino_conn):
 
 def main():
     """Main lab execution."""
+    parser = argparse.ArgumentParser(
+        description="Iceberg Internals Lab - demonstrates Iceberg table operations and metadata",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python lab/run_lab.py --run
+  python lab/run_lab.py --run --mode storage
+  python lab/run_lab.py --run --mode sql
+        """
+    )
+    parser.add_argument(
+        '--run',
+        action='store_true',
+        help='Run the lab (without this flag, help is shown)'
+    )
+    parser.add_argument(
+        '--mode',
+        choices=['full', 'storage', 'sql'],
+        default='full',
+        help='full=all output, storage=object storage only, sql=Trino/info schema only'
+    )
+    args = parser.parse_args()
+    
+    if not args.run:
+        parser.print_help()
+        return
+    
+    mode = args.mode
+    
     console.print(Panel(
         "[bold]Iceberg Internals Lab[/bold]\n\n"
         "This lab demonstrates how Iceberg table operations are reflected\n"
@@ -867,6 +1020,8 @@ def main():
         title="Welcome",
         expand=False
     ))
+    if mode != 'full':
+        console.print(f"\n[dim]Mode: {mode} (use --mode full for all output)[/dim]")
     
     wait_for_key("Press any key to start the lab...")
     
@@ -884,7 +1039,7 @@ def main():
     cleanup_previous_run(explorer, trino_conn)
     
     # Setup catalog
-    setup_catalog(explorer, trino_conn)
+    setup_catalog(explorer, trino_conn, mode)
     
     # Reconnect with catalog
     trino_conn = get_trino_connection()
@@ -892,19 +1047,19 @@ def main():
     wait_for_key()
     
     # Run steps
-    step1_create_table(explorer, trino_conn)
+    step1_create_table(explorer, trino_conn, mode)
     wait_for_key("\nPress any key for Step 2...")
     
-    step2_insert_data(explorer, trino_conn)
+    step2_insert_data(explorer, trino_conn, mode)
     wait_for_key("\nPress any key for Step 3...")
     
-    step3_delete_data(explorer, trino_conn)
+    step3_delete_data(explorer, trino_conn, mode)
     wait_for_key("\nPress any key for Step 4...")
     
-    step4_update_data(explorer, trino_conn)
+    step4_update_data(explorer, trino_conn, mode)
     wait_for_key("\nPress any key for Step 5...")
     
-    step5_time_travel(explorer, trino_conn)
+    step5_time_travel(explorer, trino_conn, mode)
     
     # Summary
     console.print("\n")
@@ -923,4 +1078,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Interrupted.[/yellow]")
+        sys.exit(130)
+    except EOFError:
+        console.print("\n[dim]Exiting.[/dim]")
+        sys.exit(0)

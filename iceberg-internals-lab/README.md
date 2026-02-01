@@ -73,10 +73,32 @@ This starts:
 ## Run the Lab
 
 ```bash
+# Show help (default when run without --run)
 python lab/run_lab.py
+
+# Run the lab
+python lab/run_lab.py --run
 ```
 
-The lab is interactive - press Enter to advance through each step.
+The lab is interactive - press any key to advance through each step.
+
+### Output Modes
+
+Use `--mode` to reduce output and focus on specific aspects:
+
+| Mode | Output |
+|------|--------|
+| `full` (default) | All output - storage changes and SQL verification |
+| `storage` | Object storage view only: catalog structure, metadata, manifests, MinIO files |
+| `sql` | Trino view only: information_schema, metadata tables ($snapshots, $files, etc.) |
+
+```bash
+# Object storage focus (manifest content, MinIO files)
+python lab/run_lab.py --run --mode storage
+
+# SQL / information schema focus
+python lab/run_lab.py --run --mode sql
+```
 
 ## Lab Steps
 
